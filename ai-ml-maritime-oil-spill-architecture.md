@@ -1516,3 +1516,329 @@ Recommended frontend quality gates:
 - Run browser tests for case creation, retry, map/table synchronization, and evidence review.
 - Test responsive layouts and keyboard navigation at the target investigation resolutions.
 - Pin frontend dependencies and produce a content-hashed, immutable build artifact.
+
+## 24. Complete End-to-End Architecture
+
+This is the final system boundary from analyst action to persisted, explainable attribution evidence.
+
+```mermaid
+flowchart TB
+        ANALYST["Investigator"]
+
+        subgraph CLIENT["Frontend application"]
+                CASEUI["Case creation"]
+                MONITOR["Pipeline monitor"]
+                MAPUI["Map + evidence review"]
+        end
+
+        subgraph BACKEND["Java Spring Boot application"]
+                API["REST API + OAuth2 security"]
+                DOMAIN["Case domain + state machine"]
+                WORKER["Workflow worker"]
+                ADAPTERS["Typed FastAPI adapters"]
+        end
+
+        subgraph PYTHON["Python FastAPI AI/ML services"]
+                DET["Slick detection\nPyTorch + rasterio"]
+                DRIFT["Drift hindcast\nOpenDrift + xarray"]
+                AISML["AIS correlation\npandas + geopandas"]
+        end
+
+        subgraph DATA["Data and persistence"]
+                POSTGRES[("PostgreSQL\nCases + runs + evidence")]
+                OBJECT[("Object storage\nGeoTIFF + NetCDF + GeoJSON + Parquet")]
+                QUEUE["Job queue"]
+                CACHE["Optional Redis cache"]
+        end
+
+        subgraph SOURCES["External sources"]
+                SAR["Sentinel-1 SAR"]
+                ERA["ERA5 winds"]
+                HY["HYCOM currents"]
+                AISDATA["Historical AIS"]
+        end
+
+        ANALYST --> CASEUI --> API
+        ANALYST --> MONITOR
+        ANALYST --> MAPUI
+        API --> DOMAIN --> WORKER
+        WORKER --> QUEUE
+        WORKER --> ADAPTERS
+        ADAPTERS --> DET
+        ADAPTERS --> DRIFT
+        ADAPTERS --> AISML
+        SAR --> OBJECT
+        ERA --> OBJECT
+        HY --> OBJECT
+        AISDATA --> OBJECT
+        DET --> OBJECT
+        DRIFT --> OBJECT
+        AISML --> OBJECT
+        DOMAIN --> POSTGRES
+        WORKER --> POSTGRES
+        API --> POSTGRES
+        API --> OBJECT
+        API --> CACHE
+        API --> MONITOR
+        API --> MAPUI
+```
+
+### One complete case execution
+
+1. An investigator creates a case in the frontend and selects a Sentinel-1 GeoTIFF.
+2. Spring Boot validates the request, stores the case, creates a `PipelineRun`, and returns `202 Accepted`.
+3. The workflow worker queues Stage 1 and calls `POST /detect-slick` through `SlickDetectionClient`.
+4. Slick detection calibrates, filters, masks, segments, and polygonizes the SAR image.
+5. The backend stores the slick GeoJSON, geometry statistics, model version, and stage audit event.
+6. The worker calls `POST /hindcast` with the slick reference and environmental dataset references.
+7. OpenDrift runs a backward particle simulation and writes the probability grid and trajectories to object storage.
+8. The backend stores the spill-time window, grid URI, simulation settings, and data-quality metadata.
+9. The worker calls `POST /correlate` with the probability grid, spill window, and AIS track reference.
+10. AIS correlation filters tracks, computes CPA and timing features, detects anomalies and gaps, and creates ranked candidates.
+11. Spring Boot persists every candidate and evidence item, marks the run `COMPLETED`, and exposes results to the frontend.
+12. The analyst reviews the map, table, evidence breakdown, source timestamps, and model versions before making a human decision.
+
+## 25. Recommended Repository Structure
+
+Use a monorepo so judges and developers can run the complete system from one checkout while keeping each service independently deployable.
+
+```text
+sih-architecture/
+    README.md
+    docker-compose.yml
+    .env.example
+    docs/
+        architecture.md
+        api-contracts/
+            openapi-backend.yaml
+            openapi-ai-services.yaml
+        demo-script.md
+    frontend/
+        src/
+            app/
+            auth/
+            api/
+            cases/
+            pipeline/
+            map/
+            attribution/
+            components/
+        Dockerfile
+    backend/
+        src/main/java/.../
+            api/
+            application/
+            domain/
+            infrastructure/
+            security/
+        src/main/resources/
+            application.yml
+            db/migration/
+        Dockerfile
+    services/
+        slick-detection/
+            app/api/
+            app/domain/
+            app/infrastructure/
+            models/
+            tests/
+            Dockerfile
+        drift-hindcast/
+            app/api/
+            app/domain/
+            app/infrastructure/
+            tests/
+            Dockerfile
+        ais-correlation/
+            app/api/
+            app/domain/
+            app/infrastructure/
+            tests/
+            Dockerfile
+    data/
+        sample/sar/
+        sample/environment/
+        sample/ais/
+        expected/
+    infra/
+        postgres/
+        object-storage/
+        monitoring/
+```
+
+The architecture document remains at the repository root or under `docs/`, but the runnable implementation should follow the same boundaries described here.
+
+## 26. Database and Artifact Strategy
+
+### PostgreSQL owns searchable metadata
+
+Store these in PostgreSQL:
+
+- Case identity, title, region, owner, and lifecycle status
+- Pipeline runs, current stage, retry count, and correlation ID
+- Input references and source timestamps
+- Slick summary, geometry statistics, model version, and confidence
+- Hindcast time window, configuration, engine version, and grid reference
+- Candidate vessel identity, total score, confidence, and rank
+- Individual evidence components and explanations
+- Analyst notes, audit events, and export history
+
+### Object storage owns large scientific files
+
+Store these as immutable, versioned artifacts:
+
+- Original Sentinel-1 GeoTIFF
+- Preprocessed SAR raster and segmentation mask
+- Slick GeoJSON and preview image
+- ERA5 and HYCOM subsets used for a run
+- OpenDrift particle trajectories and NetCDF probability grid
+- AIS input subset and normalized Parquet file
+- Correlation evidence export and reproducibility manifest
+
+Each artifact record should include:
+
+```json
+{
+    "artifactId": "artifact-001",
+    "uri": "s3://oil-spill-artifacts/run-001/origin-grid.nc",
+    "sha256": "...",
+    "contentType": "application/x-netcdf",
+    "sizeBytes": 4820192,
+    "createdAt": "2026-09-24T06:00:00Z",
+    "producer": "drift-hindcast",
+    "producerVersion": "opendrift-v1",
+    "runId": "run-001"
+}
+```
+
+Never put large raster, NetCDF, or AIS payloads directly into PostgreSQL rows or normal REST JSON responses.
+
+## 27. MVP Build Plan
+
+Build in this order so a working demonstration exists early and each later feature improves the same vertical slice.
+
+### Milestone 1: End-to-end skeleton
+
+- Create the Spring Boot case API and PostgreSQL schema.
+- Create three FastAPI apps with health endpoints and typed Pydantic models.
+- Create a frontend with case creation, run status, and result placeholder screens.
+- Connect the services with Docker Compose.
+- Use a sample fixture mode so the complete pipeline can run without external credentials.
+
+**Exit condition:** A user can create a case and see `QUEUED -> RUNNING -> COMPLETED` across all three stages.
+
+### Milestone 2: Real slick detection
+
+- Add SAR GeoTIFF ingestion and CRS validation.
+- Implement calibration, Lee filtering, land masking, and U-Net inference.
+- Produce valid GeoJSON and geometry statistics.
+- Add a map overlay for the slick.
+
+**Exit condition:** A sample image produces a visually credible slick polygon with measured area and timestamp.
+
+### Milestone 3: Real drift hindcast
+
+- Add ERA5 and HYCOM subset loading.
+- Run OpenDrift backward simulation with configurable particle count.
+- Store trajectories and probability grid in NetCDF.
+- Render the origin probability field with a numeric legend.
+
+**Exit condition:** The source region and spill window are visible and reproducible from stored inputs.
+
+### Milestone 4: Real AIS correlation
+
+- Normalize AIS records and validate MMSI and timestamps.
+- Implement spatial-temporal filtering and CPA.
+- Add timing, speed/course anomaly, and transponder-gap features.
+- Return ranked candidates with evidence breakdown.
+
+**Exit condition:** The UI shows at least three ranked candidates and explains every score component.
+
+### Milestone 5: Judge-ready hardening
+
+- Add authentication, audit trail, retries, and failure states.
+- Add sample-mode fallback and a reproducibility manifest.
+- Add automated tests and a one-command demo.
+- Record model, data, configuration, and source timestamps in every result.
+
+**Exit condition:** A fresh machine can run the demo from the README and produce the same result for the same fixture inputs.
+
+## 28. Demo Storyline for Judges
+
+The strongest demonstration is a short investigation story rather than a tour of code.
+
+1. **Problem:** “A satellite detects a slick, but detection alone cannot identify its source or responsible vessel.”
+2. **Observe:** Upload or select a Sentinel-1 image and show the segmented slick polygon.
+3. **Trace:** Start the hindcast and animate or reveal the backward particle paths and origin probability field.
+4. **Correlate:** Overlay historical AIS tracks and show how the system narrows the search space.
+5. **Explain:** Select a candidate and show proximity, timing, anomaly, and AIS-gap evidence separately.
+6. **Qualify:** Show a second candidate and explain why the system produces ranked leads rather than a single accusation.
+7. **Audit:** Open the run timeline and show data versions, model versions, timestamps, and reproducibility artifacts.
+
+Keep the live demo under five minutes. Pre-cache the sample datasets, but visibly execute the pipeline and show real intermediate outputs rather than switching between static screenshots.
+
+## 29. What Makes the Solution Competitive
+
+### Technical differentiation
+
+- A complete multi-stage attribution chain instead of an isolated classifier.
+- Physics-informed backward drift modeling rather than image-only detection.
+- Explainable AIS correlation with evidence factors instead of opaque classification.
+- Separate FastAPI services that can scale according to workload.
+- Java orchestration and a usable analyst frontend rather than a notebook-only prototype.
+- Reproducibility through immutable artifacts, version metadata, and audit events.
+
+### Trust and responsible attribution
+
+- Show probability fields and confidence ranges, not false precision.
+- Return ranked candidates and evidence breakdowns, never a single automatic verdict.
+- Display data freshness and missing-coverage warnings.
+- Preserve the source records behind every score.
+- Keep the analyst in the decision loop.
+
+### Product quality
+
+- One-command local startup.
+- Clear loading, partial, failed, and retry states.
+- Fast map interactions with synchronized candidate table and evidence panel.
+- A concise executive summary alongside technical details.
+- A recorded fallback demo in case an external data provider is unavailable.
+
+## 30. Validation and Success Metrics
+
+Track metrics that demonstrate scientific usefulness, system reliability, and user value.
+
+| Area | Metric | Target for demonstration |
+| --- | --- | --- |
+| Slick detection | Intersection-over-Union against labeled mask | Report on held-out sample; do not invent a target without data |
+| Slick geometry | Valid polygon rate | 100% for accepted outputs |
+| Hindcast | Source-region containment | Report whether known source lies in top probability region |
+| Hindcast | Simulation reproducibility | Same inputs and configuration produce same manifest and comparable field |
+| AIS correlation | Candidate recall at top-k | Report on synthetic or labeled scenarios |
+| Explainability | Candidates with complete evidence breakdown | 100% |
+| Reliability | Pipeline completion rate in fixture mode | 100% |
+| Performance | Time per stage | Measure and display on the run timeline |
+| Auditability | Results with model/data/config versions | 100% |
+
+Do not claim accuracy, legal responsibility, or operational readiness without labeled validation data. For the hackathon, clearly separate measured fixture results from planned production validation.
+
+## 31. Final Definition of Done
+
+The project is complete when:
+
+- The frontend creates a case and starts a pipeline through Spring Boot.
+- Spring Boot persists the case and coordinates all three FastAPI services.
+- Each FastAPI service has a separate endpoint, health check, validation model, and test fixture.
+- Stage 1 returns a valid slick GeoJSON result.
+- Stage 2 returns a probability field and spill-time window.
+- Stage 3 returns ranked vessels with transparent evidence.
+- PostgreSQL stores lifecycle state, summaries, candidate records, and audit events.
+- Object storage preserves the input and intermediate scientific artifacts.
+- The frontend renders the slick, origin field, AIS tracks, candidates, and evidence.
+- Retryable and non-retryable errors are visible and traceable by correlation ID.
+- Model versions, data versions, configuration, and timestamps are included in results.
+- The complete fixture demo runs with one command from a clean checkout.
+- Tests cover the happy path, invalid inputs, service timeout, partial completion, retry, and no-candidate scenarios.
+- The README contains architecture, setup, demo steps, limitations, and measured results.
+
+The winning implementation is the smallest version that demonstrates this complete, explainable vertical slice reliably. Add scientific sophistication only after the end-to-end journey works in front of a judge.
