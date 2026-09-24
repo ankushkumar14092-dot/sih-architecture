@@ -2,50 +2,65 @@
 
 ```mermaid
 flowchart LR
-    %% External inputs
+    %% User-facing system and external data sources
+    USER["Investigator / Analyst"]
+    FRONTEND["Frontend web application\nCase workspace + map + evidence review"]
     SAR["Sentinel-1 SAR image\nGeoTIFF"]
     MET["ERA5 wind data"]
     OCEAN["HYCOM ocean currents"]
     AIS["Historical AIS vessel\ntrack data"]
-    BACKEND["Java Spring Boot backend\nREST consumer"]
 
-    subgraph AIML["Python AI/ML microservices (exposed as REST APIs)"]
+    subgraph JAVA["Java Spring Boot backend\nREST API + workflow orchestration"]
+        CASE["Case management\nAuthentication + authorization"]
+        ORCH["Pipeline orchestrator\nState machine + job queue"]
+        CLIENTS["Typed FastAPI clients\nTimeouts + retries + correlation IDs"]
+        RESULTS["Results + evidence API\nPostgreSQL + object storage"]
+        CASE --> ORCH --> CLIENTS
+        ORCH --> RESULTS
+    end
+
+    subgraph AIML["Python AI/ML microservices (separate FastAPI applications)"]
         direction LR
 
-        subgraph S1["Stage 1 - Slick Detection Service\nFastAPI app: POST /detect-slick"]
+        subgraph S1["Stage 1 - Slick Detection\nPOST /detect-slick"]
             direction TB
-            P1["Radiometric calibration\nSpeckle filtering: Lee filter\nLand masking"]
+            P1["Calibration\nLee filter + land mask"]
             U1["U-Net CNN segmentation\nPyTorch"]
-            G1["Mask to polygon conversion\nrasterio / GDAL / shapely"]
-            O1["GeoJSON slick polygon\nTimestamp + geometry stats"]
+            G1["Polygon conversion\nrasterio / GDAL / shapely"]
+            O1["SlickDetectionResult\nGeoJSON + timestamp + stats"]
             P1 --> U1 --> G1 --> O1
         end
 
-        subgraph S2["Stage 2 - Drift Hindcast Service\nFastAPI app: POST /hindcast"]
+        subgraph S2["Stage 2 - Drift Hindcast\nPOST /hindcast"]
             direction TB
-            P2["OpenDrift / OpenOil\nBackward-in-time particle simulation"]
-            F2["Leeway factor + Coriolis deflection\nERA5 wind + HYCOM currents"]
-            O2["Origin probability field\nLat/lon grid + spill-time window"]
+            P2["OpenDrift / OpenOil\nBackward particle simulation"]
+            F2["ERA5 + HYCOM forcing\nLeeway + Coriolis"]
+            O2["DriftHindcastResult\nOrigin field + spill window"]
             P2 --> F2 --> O2
         end
 
-        subgraph S3["Stage 3 - AIS Correlation Service\nFastAPI app: POST /correlate"]
+        subgraph S3["Stage 3 - AIS Correlation\nPOST /correlate"]
             direction TB
-            P3["Spatial-temporal filtering\nCPA calculation + timing sync scoring"]
-            A3["Speed/course anomaly detection\nAIS transponder gap detection"]
-            O3["Weighted suspicion scoring\nEvidence aggregation"]
-            R3["Ranked candidate vessels\nEvidence breakdown, never a single verdict"]
+            P3["Spatial-temporal filtering\nCPA + timing score"]
+            A3["Speed/course anomalies\nAIS gap detection"]
+            O3["Weighted evidence scoring"]
+            R3["VesselAttributionResult\nRanked candidates + evidence"]
             P3 --> A3 --> O3 --> R3
         end
     end
 
-    SAR -->|GeoTIFF| P1
-    O1 -->|Slick polygon + timestamp| P2
-    MET -->|Wind fields| F2
-    OCEAN -->|Current fields| F2
-    O2 -->|Origin field + time window| P3
-    AIS -->|Historical tracks| P3
-    R3 -->|Ranked vessels + evidence| BACKEND
+    USER --> FRONTEND -->|REST / HTTPS| CASE
+    SAR -->|Stored input reference| CASE
+    MET -->|Dataset reference| CASE
+    OCEAN -->|Dataset reference| CASE
+    AIS -->|Track reference| CASE
+    CLIENTS -->|REST / JSON| S1
+    CLIENTS -->|REST / JSON| S2
+    CLIENTS -->|REST / JSON| S3
+    O1 -->|Internal pipeline result| CLIENTS
+    O2 -->|Internal pipeline result| CLIENTS
+    R3 -->|Persisted result| RESULTS
+    RESULTS -->|Ranked vessels + evidence| FRONTEND
 
     classDef external fill:#F4F1DE,stroke:#8A6D3B,color:#2B2417,stroke-width:1.5px
     classDef stage1 fill:#DCEEFF,stroke:#2E6FAD,color:#102A43,stroke-width:1.5px
@@ -53,7 +68,7 @@ flowchart LR
     classDef stage3 fill:#FFE4D6,stroke:#C05621,color:#48200F,stroke-width:1.5px
     classDef boundary fill:#FFFFFF,stroke:#334E68,color:#102A43,stroke-width:2px
 
-    class SAR,MET,OCEAN,AIS,BACKEND external
+    class USER,FRONTEND,SAR,MET,OCEAN,AIS external
     class P1,U1,G1,O1 stage1
     class P2,F2,O2 stage2
     class P3,A3,O3,R3 stage3
@@ -66,10 +81,11 @@ flowchart LR
 
 ## Pipeline Contract
 
-1. `POST /detect-slick` accepts a Sentinel-1 SAR GeoTIFF and returns a GeoJSON slick polygon, acquisition timestamp, and geometry statistics.
-2. `POST /hindcast` accepts the slick geometry and timestamp, combines ERA5 and HYCOM data, and returns an origin probability field plus an estimated spill-time window.
-3. `POST /correlate` accepts the origin field and time window with historical AIS tracks, then returns ranked candidate vessels with a transparent evidence breakdown.
-4. The Java Spring Boot backend consumes the ranked vessel list over REST for downstream investigation and presentation.
+1. The frontend sends case commands to the Java Spring Boot backend over REST; the frontend never calls the Python services directly.
+2. The backend stores source references and invokes `POST /detect-slick` through `SlickDetectionClient`. The FastAPI service accepts a Sentinel-1 SAR GeoTIFF reference and returns a GeoJSON slick polygon, acquisition timestamp, and geometry statistics.
+3. The backend passes the detection result to `POST /hindcast` through `DriftHindcastClient`. The FastAPI service combines ERA5 and HYCOM data and returns an origin probability field plus an estimated spill-time window.
+4. The backend passes the hindcast result and AIS track reference to `POST /correlate` through `AisCorrelationClient`. The FastAPI service returns ranked candidate vessels with a transparent evidence breakdown.
+5. The backend persists every stage result, updates the pipeline state, and exposes the final ranked vessel list to the frontend for downstream investigation and presentation.
 
 ## 1. High-Level System Context
 
