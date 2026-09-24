@@ -839,6 +839,196 @@ The state machine is persisted, so a service restart does not lose the current w
 4. A successful response is persisted before the next stage begins.
 5. A failed call is classified as retryable or non-retryable and recorded in the audit log.
 
+### Backend-to-FastAPI adapter architecture
+
+The Spring Boot backend communicates with each Python service through a dedicated typed adapter. The backend does not call FastAPI endpoints directly from controllers or workflow code. This keeps transport concerns, authentication, retries, and DTO conversion in one place.
+
+```mermaid
+flowchart LR
+    ORCH["PipelineApplicationService"]
+    POLICY["FastApiRequestPolicy\nTimeouts + retries + circuit breaker"]
+    DETCLIENT["SlickDetectionClient\nPOST /detect-slick"]
+    HINCLIENT["DriftHindcastClient\nPOST /hindcast"]
+    AISC["AisCorrelationClient\nPOST /correlate"]
+
+    subgraph FASTAPI["Python FastAPI applications"]
+        DETAPI["Slick Detection API"]
+        HINAPI["Drift Hindcast API"]
+        AISAPI["AIS Correlation API"]
+    end
+
+    ORCH --> POLICY
+    ORCH --> DETCLIENT
+    ORCH --> HINCLIENT
+    ORCH --> AISC
+    POLICY --> DETCLIENT
+    POLICY --> HINCLIENT
+    POLICY --> AISC
+    DETCLIENT --> DETAPI
+    HINCLIENT --> HINAPI
+    AISC --> AISAPI
+```
+
+### FastAPI service configuration
+
+Each FastAPI application is independently configured through environment variables or service discovery:
+
+```text
+SLICK_DETECTION_BASE_URL=http://slick-detection:8001
+DRIFT_HINDCAST_BASE_URL=http://drift-hindcast:8002
+AIS_CORRELATION_BASE_URL=http://ais-correlation:8003
+FASTAPI_CONNECT_TIMEOUT_MS=2000
+FASTAPI_READ_TIMEOUT_MS=30000
+FASTAPI_MAX_RETRIES=3
+```
+
+The hindcast and correlation services may use longer read timeouts or asynchronous job endpoints than slick detection. These values belong in backend configuration, not in frontend code or request payloads.
+
+### Java client contracts
+
+```mermaid
+classDiagram
+    class PipelineApplicationService {
+        +startDetection(runId, input) SlickDetectionResult
+        +startHindcast(runId, detection) DriftHindcastResult
+        +startCorrelation(runId, hindcast, ais) VesselAttributionResult
+    }
+    class FastApiRequestPolicy {
+        +execute(request, operation) response
+        +validateResponse(response) void
+        +classifyFailure(error) FailureType
+    }
+    class SlickDetectionClient {
+        +detect(request, headers) SlickDetectionResult
+        +health() ServiceHealth
+    }
+    class DriftHindcastClient {
+        +hindcast(request, headers) DriftHindcastResult
+        +health() ServiceHealth
+    }
+    class AisCorrelationClient {
+        +correlate(request, headers) VesselAttributionResult
+        +health() ServiceHealth
+    }
+    class FastApiHeaders {
+        +String correlationId
+        +String pipelineRunId
+        +String idempotencyKey
+        +String serviceToken
+    }
+    class SlickDetectionRequestDto {
+        +String imageUri
+        +Instant acquisitionTime
+        +String productId
+        +String polarization
+    }
+    class HindcastRequestDto {
+        +String slickArtifactUri
+        +Instant detectionTime
+        +Instant earliestSpillTime
+        +Instant latestSpillTime
+        +Double leewayFactor
+        +Integer particleCount
+    }
+    class CorrelationRequestDto {
+        +String probabilityGridUri
+        +String aisTrackUri
+        +Instant windowStart
+        +Instant windowEnd
+        +ScoringWeights weights
+    }
+
+    PipelineApplicationService --> SlickDetectionClient
+    PipelineApplicationService --> DriftHindcastClient
+    PipelineApplicationService --> AisCorrelationClient
+    SlickDetectionClient --> FastApiRequestPolicy
+    DriftHindcastClient --> FastApiRequestPolicy
+    AisCorrelationClient --> FastApiRequestPolicy
+    SlickDetectionClient ..> SlickDetectionRequestDto
+    DriftHindcastClient ..> HindcastRequestDto
+    AisCorrelationClient ..> CorrelationRequestDto
+    FastApiRequestPolicy --> FastApiHeaders
+```
+
+### Java-to-FastAPI request mapping
+
+| Backend adapter | FastAPI endpoint | Request reference | Response persisted by backend |
+| --- | --- | --- | --- |
+| `SlickDetectionClient` | `POST /detect-slick` | SAR GeoTIFF URI, acquisition time, product ID, polarization | `SlickObservation` and detection artifact metadata |
+| `DriftHindcastClient` | `POST /hindcast` | Slick artifact, time bounds, leeway factor, particle count | `HindcastResult` and probability-grid URI |
+| `AisCorrelationClient` | `POST /correlate` | Probability-grid URI, spill window, AIS track URI, scoring weights | `VesselCandidate` and `EvidenceItem` records |
+
+### Common FastAPI headers
+
+Every backend request to a Python service should include:
+
+```http
+X-Correlation-Id: corr-7b3f
+X-Pipeline-Run-Id: run-001
+X-Idempotency-Key: run-001-detection
+Authorization: Bearer <service-token>
+Content-Type: application/json
+```
+
+The Python service should echo `X-Correlation-Id` in its response. The backend validates that the response belongs to the active run before persisting it.
+
+### Updated Java-to-FastAPI runtime sequence
+
+```mermaid
+sequenceDiagram
+    participant Worker as Spring Boot Workflow Worker
+    participant DB as Metadata DB
+    participant DClient as SlickDetectionClient
+    participant DAPI as FastAPI /detect-slick
+    participant HClient as DriftHindcastClient
+    participant HAPI as FastAPI /hindcast
+    participant AClient as AisCorrelationClient
+    participant AAPI as FastAPI /correlate
+
+    Worker->>DB: Create run and correlation ID
+    Worker->>DClient: detect(request, common headers)
+    DClient->>DAPI: POST /detect-slick
+    DAPI-->>DClient: SlickDetectionResult
+    DClient-->>Worker: Typed result or classified failure
+    Worker->>DB: Persist detection result
+
+    Worker->>HClient: hindcast(request, common headers)
+    HClient->>HAPI: POST /hindcast
+    HAPI-->>HClient: DriftHindcastResult
+    HClient-->>Worker: Typed result or classified failure
+    Worker->>DB: Persist hindcast result
+
+    Worker->>AClient: correlate(request, common headers)
+    AClient->>AAPI: POST /correlate
+    AAPI-->>AClient: VesselAttributionResult
+    AClient-->>Worker: Typed result or classified failure
+    Worker->>DB: Persist candidates and evidence
+```
+
+### FastAPI error mapping
+
+| FastAPI response | Backend behavior |
+| --- | --- |
+| `2xx` with valid payload | Persist result and advance the state machine. |
+| `400` or `422` validation error | Mark stage failed as non-retryable and expose field errors. |
+| `401` or `403` | Alert service-credential configuration and do not retry blindly. |
+| `404` missing artifact | Mark input artifact invalid and require a new input or run. |
+| `408`, `429`, or `5xx` | Retry with bounded exponential backoff when policy allows. |
+| Timeout or connection failure | Record service-unavailable error and retry through the queue. |
+| Invalid or incomplete `2xx` payload | Reject response, preserve raw response metadata, and fail closed. |
+
+The backend should expose a stable error response to the frontend even when the underlying FastAPI error differs:
+
+```json
+{
+  "code": "FASTAPI_HINDCAST_TIMEOUT",
+  "message": "The drift hindcast service did not respond within the configured time limit.",
+  "stage": "DRIFT_HINDCAST",
+  "retryable": true,
+  "correlationId": "corr-7b3f"
+}
+```
+
 ## 13. Orchestration and Asynchronous Jobs
 
 ```mermaid
