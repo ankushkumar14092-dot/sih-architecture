@@ -38,6 +38,18 @@ The first runnable milestone should use a deterministic fixture mode. Real data 
 - Claims of scientific accuracy until evaluated against labeled, representative cases.
 - A training platform for building and labeling large segmentation datasets.
 
+### Requirements from the SIH problem statement
+
+The official challenge extends beyond identifying the slick's origin. The implementation should also:
+
+- Accept SAR imagery and support EO imagery through a sensor-aware ingestion contract. Deliver SAR first; add EO preprocessing as a separately validated path because optical and SAR data need different preprocessing.
+- Characterize slick geometry and estimate slick age when the available observations support it. Treat age as an estimate, include its method and confidence, and return `unavailable` when a single observation cannot support a defensible estimate.
+- Backtrack the slick to estimate its origin and spill-time window, and forecast its likely forward movement from the observation time.
+- Reconstruct vessel traffic around the estimated origin and time window, filter unrelated traffic, and rank candidates using proximity, trajectory consistency, timing, and behavioral anomalies.
+- Support real AIS inputs when licensed and available, while providing synthetic AIS fixtures for a reproducible demonstration.
+
+The problem statement's listed starting points are [MarineCadastre AccessAIS](https://marinecadastre.gov/accessais/) and the [Sentinel-1 SAR oil-spill dataset, Part I](https://zenodo.org/records/8346860), [Part II](https://zenodo.org/records/8253899), and [Part III](https://zenodo.org/records/13761290). Confirm each dataset's license, metadata, and suitability before using it for training or public redistribution. The [SIH26143 statement](https://sih2026-ps-viewer.vercel.app/ps/SIH26143) is the reference for these requirements.
+
 ## 3. System components and boundaries
 
 | Component | Owns | Must not own |
@@ -127,8 +139,8 @@ Implement the following core records before adding scientific processing:
 - **AttributionCase**: id, title, region, owner/organization, lifecycle status, SAR input reference, acquisition timestamp, created/updated timestamps.
 - **PipelineRun**: id, case id, status, current stage, correlation id, idempotency key, attempt count, timestamps, failure details, configuration snapshot.
 - **Artifact**: id, run id, URI, SHA-256, content type, byte size, creation timestamp, producer and producer version.
-- **SlickObservation**: run id, polygon artifact/reference, geometry summary, detection timestamp, model/preprocessing version, confidence and quality warnings.
-- **HindcastResult**: run id, probability-grid and trajectory references, estimated spill window, engine/configuration version, forcing-data provenance and coverage warnings.
+- **SlickObservation**: run id, polygon artifact/reference, geometry summary, detection timestamp, sensor type, model/preprocessing version, confidence and quality warnings, and optional age estimate with method and confidence.
+- **HindcastResult**: run id, backward origin probability grid and trajectories, forward forecast trajectories/probability grid, estimated spill window, engine/configuration version, forcing-data provenance and coverage warnings.
 - **VesselCandidate**: run id, MMSI, vessel name when available, rank, total score, confidence label, source track reference.
 - **EvidenceItem**: candidate id, feature type, normalized component value, weight, source record/artifact reference, explanation, quality caveat.
 - **AuditEvent**: case/run id, actor or system identity, action, timestamp, correlation id, structured details.
@@ -172,9 +184,9 @@ Use a consistent error body such as `{ "code", "message", "retryable", "correlat
 
 All requests include `X-Correlation-Id`, `X-Pipeline-Run-Id`, `X-Idempotency-Key`, and service authentication. Services echo the correlation id. Validate responses before persisting them.
 
-1. **Detection** `POST /detect-slick`: input SAR artifact URI, acquisition timestamp, product id, polarization, and optional processing configuration. Output detection id, slick GeoJSON or artifact URI, geometry statistics, confidence, model/preprocessing versions, and warnings.
-2. **Hindcast** `POST /hindcast`: input slick reference, observation time, allowed spill interval, wind/current artifact references, leeway and particle configuration. Output probability-grid URI, spill-time window, simulation metadata, forcing-data provenance, and quality warnings.
-3. **Correlation** `POST /correlate`: input probability-grid reference, spill window, AIS track reference, and versioned scoring weights. Output ranked candidates, component scores, evidence references, scoring version, and generated timestamp.
+1. **Detection** `POST /detect-slick`: input SAR or EO artifact URI, sensor type, acquisition timestamp, product id, and sensor-specific metadata such as SAR polarization. Output detection id, slick GeoJSON or artifact URI, geometry statistics, confidence, optional age estimate, model/preprocessing versions, and warnings.
+2. **Drift** `POST /hindcast`: input slick reference, observation time, allowed spill interval, wind/current artifact references, leeway, and particle configuration. Backtrack from the observation to estimate origin and spill-time window; forecast forward from observation using the same configured environmental forcing. Output origin and forecast artifact references, spill-time window, simulation metadata, forcing-data provenance, and quality warnings.
+3. **Correlation** `POST /correlate`: input origin probability-grid reference, spill window, AIS track reference, forward trajectory reference where available, and versioned scoring weights. Output ranked candidates, component scores, evidence references, scoring version, and generated timestamp.
 
 Return `422` for invalid fields, `404` for missing referenced artifacts, `401/403` for service authentication failures, `429` for rate limits, and retryable `5xx` for transient processing errors. Keep error codes stable even if implementation libraries change.
 
@@ -205,10 +217,12 @@ Build the complete vertical slice before investing heavily in model sophisticati
 ### Milestone 2 — SAR slick detection
 
 - Validate file type, raster dimensions, bands, georeferencing, CRS, acquisition time, and polarization.
+- Add a sensor-type field to the input contract. Implement the SAR path first; treat EO imagery with its own atmospheric/cloud masking, band selection, and calibration rather than passing it through SAR preprocessing.
 - Implement calibration and record its assumptions and source product metadata.
 - Add optional speckle filtering and land masking; make settings versioned and reproducible.
 - Load a trained, versioned U-Net model. Do not claim model accuracy without held-out labeled data.
 - Convert positive mask components to valid GeoJSON polygons, calculate area/perimeter, and reject empty or invalid geometry.
+- Estimate age only when multiple observations or validated contextual inputs support it; report the estimate, uncertainty, method, and inputs. A single image may be insufficient.
 - Save the source, processed raster/mask where licensed, result polygon, model version, and quality metadata.
 
 **Done when:** an approved sample image produces a valid, georeferenced polygon and the UI shows it with acquisition metadata.
@@ -218,7 +232,9 @@ Build the complete vertical slice before investing heavily in model sophisticati
 - Load and subset ERA5 wind and HYCOM current forcing for the region/time bounds.
 - Validate coverage, timestamps, coordinate conventions, units, missing values, and data versions.
 - Seed particles along the observed slick polygon and run backward with configurable time step, leeway, duration, and particle count.
-- Build and normalize the origin probability grid; produce the spill-time interval and coverage warnings.
+- Run backward particles to build and normalize the origin probability grid and estimate the spill-time interval.
+- Run forward particles from the observed slick time to estimate likely future movement; store forecast trajectories and field separately from the source-origin probability.
+- Keep backward-origin likelihood and forward-forecast likelihood semantically distinct in the API and map legend.
 - Save forcing subsets, simulation settings, trajectories, probability grid, and a reproducibility manifest.
 - Render the field with a numeric legend that describes whether values mean normalized probability, density, or relative likelihood.
 
@@ -226,9 +242,10 @@ Build the complete vertical slice before investing heavily in model sophisticati
 
 ### Milestone 4 — AIS correlation
 
-- Normalize AIS inputs, validate MMSI/timestamps/coordinates, handle duplicates, and document interpolation or gap policy.
-- Limit tracks by geographic bounds and the configured time window before feature calculation.
-- Calculate proximity to high-probability source cells, temporal alignment, speed/course anomalies, and reporting gaps.
+- Normalize real or synthetic AIS inputs, validate MMSI/timestamps/coordinates, handle duplicates, and document interpolation or gap policy.
+- Limit tracks by the backward origin region and spill-time window before feature calculation; exclude traffic that cannot plausibly intersect the event window.
+- Calculate proximity to high-probability source cells, trajectory consistency, temporal alignment, speed/course anomalies, and reporting gaps.
+- Make synthetic AIS fixtures reproduce plausible traffic, unrelated traffic, a candidate near the origin, and missing-reporting scenarios without representing real vessels.
 - Define feature normalization and configurable weights; validate that weights are finite, bounded, and normalized according to the selected scoring rule.
 - Return per-feature values, weights, underlying source record references, explanations, and score-model version.
 - Label outputs as leads and provide “insufficient data” or “no candidates” outcomes.
@@ -264,7 +281,7 @@ The commands below describe the intended workflow; adjust service names to the f
 3. Start infrastructure and applications with `docker compose up --build`.
 4. Check backend and AI-service `/health/live` and `/health/ready` endpoints.
 5. Open the frontend, create a fixture case, start a run, and follow the run timeline.
-6. Inspect the slick layer, origin probability layer, AIS tracks, candidate evidence, warnings, and audit events.
+6. Inspect the slick layer, optional age estimate, backward origin layer, forward forecast, clearly labeled synthetic AIS tracks, candidate evidence, warnings, and audit events.
 7. Stop with `docker compose down`. Preserve named volumes when retaining local database/artifact data; remove them only when intentionally resetting the demo.
 
 Provide a fixture seed command or startup seed that is safe to run repeatedly. The demo should avoid downloading multi-gigabyte data or model weights at runtime. If a real model is optional, clearly indicate whether fixture mode or model inference produced the current result.
@@ -338,7 +355,10 @@ Key acceptance targets:
 | Area | Acceptance |
 | --- | --- |
 | Fixture workflow | Complete from case creation through candidate review on a clean setup. |
-| Geometry | Accepted slick output is valid and has a declared CRS. |
+| Imagery and geometry | SAR processing works; EO has a sensor-aware path; accepted slick output is valid and has a declared CRS. |
+| Characterization | Geometry statistics are returned; age is reported only when validated evidence supports an estimate. |
+| Drift | Backward source field and forward forecast are separate, traceable outputs. |
+| AIS filtering | Unrelated tracks are filtered; real and synthetic inputs are identified as such. |
 | Provenance | Every result links to source artifacts and records code/model/config versions. |
 | Explainability | Every candidate score includes component values, weights, and evidence references. |
 | Failure states | Invalid input, timeout, retry, partial completion, cancellation, and no-candidate cases are visible and traceable. |
@@ -364,9 +384,9 @@ Keep the demonstration under five minutes:
 
 1. Open the case workspace and create a case from the included fixture.
 2. Start the run and show the queued/running stage timeline.
-3. Open the detected slick polygon and show its timestamp, area, and model metadata.
-4. Open the hindcast probability layer; explain the legend, spill-time interval, and any data-quality caveats.
-5. Select a ranked candidate and show proximity, timing, anomaly, and AIS-gap components with source references.
+3. Open the detected slick polygon and show its sensor, timestamp, area, optional age estimate, and model metadata.
+4. Open backward origin and forward forecast layers separately; explain their legends, spill-time interval, and data-quality caveats.
+5. Select a ranked candidate and show proximity, trajectory, timing, anomaly, and AIS-gap components with source references.
 6. Compare another candidate or show the no-candidate/partial-result behavior.
 7. Open the audit timeline and point out the run id, correlation id, source versions, and reproducibility manifest.
 

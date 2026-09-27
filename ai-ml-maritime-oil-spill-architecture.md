@@ -6,6 +6,7 @@ flowchart LR
     USER["Investigator / Analyst"]
     FRONTEND["Frontend web application\nCase workspace + map + evidence review"]
     SAR["Sentinel-1 SAR image\nGeoTIFF"]
+    EO["EO imagery\nMultispectral / optical"]
     MET["ERA5 wind data"]
     OCEAN["HYCOM ocean currents"]
     AIS["Historical AIS vessel\ntrack data"]
@@ -27,21 +28,21 @@ flowchart LR
             P1["Calibration\nLee filter + land mask"]
             U1["U-Net CNN segmentation\nPyTorch"]
             G1["Polygon conversion\nrasterio / GDAL / shapely"]
-            O1["SlickDetectionResult\nGeoJSON + timestamp + stats"]
+            O1["SlickDetectionResult\nGeoJSON + geometry + optional age"]
             P1 --> U1 --> G1 --> O1
         end
 
         subgraph S2["Stage 2 - Drift Hindcast\nPOST /hindcast"]
             direction TB
-            P2["OpenDrift / OpenOil\nBackward particle simulation"]
+            P2["OpenDrift / OpenOil\nBackward source + forward forecast"]
             F2["ERA5 + HYCOM forcing\nLeeway + Coriolis"]
-            O2["DriftHindcastResult\nOrigin field + spill window"]
+            O2["DriftHindcastResult\nOrigin + forecast fields + spill window"]
             P2 --> F2 --> O2
         end
 
         subgraph S3["Stage 3 - AIS Correlation\nPOST /correlate"]
             direction TB
-            P3["Spatial-temporal filtering\nCPA + timing score"]
+            P3["Spatial-temporal filtering\nCPA + trajectory + timing"]
             A3["Speed/course anomalies\nAIS gap detection"]
             O3["Weighted evidence scoring"]
             R3["VesselAttributionResult\nRanked candidates + evidence"]
@@ -51,6 +52,7 @@ flowchart LR
 
     USER --> FRONTEND -->|REST / HTTPS| CASE
     SAR -->|Stored input reference| CASE
+    EO -->|Optional image reference| CASE
     MET -->|Dataset reference| CASE
     OCEAN -->|Dataset reference| CASE
     AIS -->|Track reference| CASE
@@ -68,7 +70,7 @@ flowchart LR
     classDef stage3 fill:#FFE4D6,stroke:#C05621,color:#48200F,stroke-width:1.5px
     classDef boundary fill:#FFFFFF,stroke:#334E68,color:#102A43,stroke-width:2px
 
-    class USER,FRONTEND,SAR,MET,OCEAN,AIS external
+    class USER,FRONTEND,SAR,EO,MET,OCEAN,AIS external
     class P1,U1,G1,O1 stage1
     class P2,F2,O2 stage2
     class P3,A3,O3,R3 stage3
@@ -82,10 +84,16 @@ flowchart LR
 ## Pipeline Contract
 
 1. The frontend sends case commands to the Python FastAPI backend over REST; the frontend never calls the Python services directly.
-2. The backend stores source references and invokes `POST /detect-slick` through `SlickDetectionClient`. The FastAPI service accepts a Sentinel-1 SAR GeoTIFF reference and returns a GeoJSON slick polygon, acquisition timestamp, and geometry statistics.
-3. The backend passes the detection result to `POST /hindcast` through `DriftHindcastClient`. The FastAPI service combines ERA5 and HYCOM data and returns an origin probability field plus an estimated spill-time window.
-4. The backend passes the hindcast result and AIS track reference to `POST /correlate` through `AisCorrelationClient`. The FastAPI service returns ranked candidate vessels with a transparent evidence breakdown.
+2. The backend stores source references and invokes `POST /detect-slick` through `SlickDetectionClient`. The FastAPI service accepts SAR or EO imagery metadata and returns a georeferenced slick polygon, geometry statistics, confidence, and an optional age estimate when observations support one.
+3. The backend passes the detection result to `POST /hindcast` through `DriftHindcastClient`. The FastAPI service combines ERA5 and HYCOM data, backtracks to estimate origin and spill time, and forecasts likely slick movement forward from the observation time.
+4. The backend passes the origin/time window, forward forecast, and real or synthetic AIS track reference to `POST /correlate` through `AisCorrelationClient`. The service filters unrelated traffic and returns ranked candidates with trajectory, timing, proximity, and behavior evidence.
 5. The backend persists every stage result, updates the pipeline state, and exposes the final ranked vessel list to the frontend for downstream investigation and presentation.
+
+## SIH26143 Problem Statement Alignment
+
+The challenge calls for detection and characterization from satellite imagery, source tracing with oceanographic and meteorological data, forward slick-flow prediction, historical AIS filtering/scoring, and a visual interface. The implementation therefore supports SAR first and keeps an explicit EO imagery path; optional slick-age estimates must include method and uncertainty. Backward source likelihood and forward movement forecast are separate outputs with separate map legends. AIS correlation filters traffic to the event's spatial and temporal window before ranking candidates by proximity, trajectory consistency, timing, and behavioral anomalies.
+
+For fixture and evaluation data, the challenge lists [MarineCadastre AccessAIS](https://marinecadastre.gov/accessais/) and the [Sentinel-1 SAR oil-spill dataset Part I](https://zenodo.org/records/8346860), [Part II](https://zenodo.org/records/8253899), and [Part III](https://zenodo.org/records/13761290). Synthetic AIS is an acceptable demonstration fallback when real AIS is unavailable. Confirm data terms and keep synthetic identities clearly labeled. See the [SIH26143 problem statement](https://sih2026-ps-viewer.vercel.app/ps/SIH26143).
 
 ## 1. High-Level System Context
 
@@ -95,6 +103,7 @@ This view shows the major systems and the information exchanged between them.
 flowchart TB
     OPERATOR["Investigator / Analyst"]
     SAT["Sentinel-1 SAR imagery"]
+    EO["EO imagery"]
     WEATHER["ERA5 weather archive"]
     CURRENT["HYCOM ocean model"]
     AISDATA["Historical AIS provider"]
@@ -110,6 +119,7 @@ flowchart TB
     STORE["Object / document storage\nImages, GeoJSON, probability grids, audit artifacts"]
     OPERATOR --> BACKEND
     SAT --> DETECT
+    EO --> DETECT
     WEATHER --> HINDCAST
     CURRENT --> HINDCAST
     AISDATA --> CORRELATE
@@ -129,7 +139,7 @@ flowchart TB
 | Portion | Responsibility | Does not own |
 | --- | --- | --- |
 | Python FastAPI backend | Case lifecycle, authentication, orchestration, UI-facing APIs, persistence of case results | CNN inference, particle physics, AIS scoring logic |
-| Slick Detection Service | Convert a SAR image into a georeferenced oil-slick observation | Vessel attribution or spill-source inference |
+| Slick Detection Service | Convert a SAR or EO image into a georeferenced oil-slick observation | Vessel attribution or spill-source inference |
 | Drift Hindcast Service | Estimate possible source regions and spill times from environmental forcing | Vessel identity or legal conclusions |
 | AIS Correlation Service | Compare candidate vessels against the probabilistic source and time window | Image segmentation or ocean simulation |
 | Storage layer | Preserve source files, intermediate artifacts, model versions, and audit records | Real-time orchestration logic |
@@ -193,7 +203,7 @@ sequenceDiagram
     participant Detect as Slick Detection API
     participant Hindcast as Drift Hindcast API
     participant Correlate as AIS Correlation API
-    participant Sources as SAR / ERA5 / HYCOM / AIS sources
+    participant Sources as SAR / EO / ERA5 / HYCOM / AIS sources
     participant Store as Artifact Storage
 
     Analyst->>Backend: Create attribution case
@@ -232,7 +242,9 @@ classDiagram
         +string image_uri
         +datetime acquisition_time
         +string product_id
-        +string polarization
+        +string sensor_type
+        +optional string polarization
+        +optional list bands
     }
     class SlickDetectionResponse {
         +string detection_id
@@ -240,6 +252,7 @@ classDiagram
         +datetime timestamp
         +GeometryStats geometry_stats
         +float model_confidence
+        +optional AgeEstimate age_estimate
     }
     class SlickDetectionPipeline {
         +run(request) SlickDetectionResponse
@@ -248,6 +261,11 @@ classDiagram
         +calibrate(image) Raster
         +lee_filter(image) Raster
         +apply_land_mask(image) Raster
+    }
+    class EOPreprocessor {
+        +calibrate(image) Raster
+        +mask_clouds(image) Raster
+        +select_bands(image, config) Raster
     }
     class UNetSegmenter {
         +load_model(model_uri) void
@@ -264,6 +282,7 @@ classDiagram
 
     DetectionRouter --> SlickDetectionPipeline
     SlickDetectionPipeline --> SarPreprocessor
+    SlickDetectionPipeline --> EOPreprocessor
     SlickDetectionPipeline --> UNetSegmenter
     SlickDetectionPipeline --> PolygonExtractor
     SlickDetectionPipeline --> ArtifactRepository
@@ -273,12 +292,11 @@ classDiagram
 
 ### Detection processing details
 
-1. **Calibration:** Convert raw SAR digital numbers to a physically meaningful backscatter representation such as sigma-nought.
-2. **Lee filtering:** Reduce multiplicative speckle while retaining slick boundaries and coastline edges.
-3. **Land masking:** Use the raster geotransform and a coastline mask to prevent land artifacts from entering model inference.
-4. **Segmentation:** Run the preprocessed raster through a versioned U-Net model. The response should retain model version and confidence metadata.
-5. **Polygonization:** Convert connected mask regions into valid geometries, simplify only within an explicit tolerance, and preserve the source CRS in metadata.
-6. **Validation:** Reject empty, invalid, or out-of-bounds geometries before returning the result.
+1. **Sensor-aware preprocessing:** Route SAR through backscatter calibration, speckle filtering, and land masking. Route EO through optical calibration, band selection, cloud masking, and land masking. Keep these paths separate and record sensor/product metadata.
+2. **Segmentation:** Run the prepared raster through a versioned model appropriate to its sensor. Return model version and calibrated confidence metadata.
+3. **Polygonization:** Convert connected mask regions into valid geometries, simplify only within an explicit tolerance, calculate area/perimeter, and preserve the source CRS.
+4. **Age estimate:** Estimate age only when multiple observations or validated contextual features support it. Include method, interval/confidence, and input references; otherwise return `null` with an explanatory quality warning.
+5. **Validation:** Reject empty, invalid, or out-of-bounds geometries before returning the result.
 
 ## 5. Low-Level Design: Drift Hindcast
 
@@ -292,12 +310,16 @@ classDiagram
         +datetime detection_time
         +datetime earliest_spill_time
         +datetime latest_spill_time
+        +int forecast_duration_hours
         +float leeway_factor
         +int particle_count
     }
     class HindcastResponse {
         +string hindcast_id
         +ProbabilityGrid origin_probability
+        +TrajectoryArtifact backward_trajectories
+        +ProbabilityGrid forward_forecast
+        +TrajectoryArtifact forward_trajectories
         +TimeWindow spill_time_window
         +SimulationMetadata metadata
     }
@@ -309,6 +331,7 @@ classDiagram
     class OpenOilSimulationEngine {
         +seed_particles(polygon, count) ParticleSet
         +run_backward(particles, wind, currents, config) TrajectorySet
+        +run_forward(particles, wind, currents, config) TrajectorySet
     }
     class ProbabilityFieldBuilder {
         +accumulate(trajectories) ProbabilityGrid
@@ -334,10 +357,12 @@ classDiagram
 
 - The slick polygon defines the final observed particle region.
 - The simulation runs backward from the observation time across a configured historical interval.
+- A separate forward simulation starts at the observed slick time and estimates likely movement over the configured forecast interval.
 - ERA5 supplies wind forcing; HYCOM supplies ocean-current forcing.
 - Leeway represents wind-induced surface drift that is not captured by current velocity alone.
 - Coriolis deflection changes particle heading according to latitude and motion direction.
 - The probability grid is produced from particle density, normalized so that cell values are comparable.
+- Keep the backward origin probability and forward forecast probability as distinct artifacts; do not combine their legends or interpretive labels.
 - Missing environmental coverage, invalid time ranges, and unrealistic particle counts must be reported as validation errors rather than silently simulated.
 
 ## 6. Low-Level Design: AIS Correlation
@@ -348,9 +373,10 @@ classDiagram
         +correlate(request: CorrelationRequest) CorrelationResponse
     }
     class CorrelationRequest {
-        +ProbabilityGrid origin_probability
+        +string origin_probability_uri
+        +string forward_trajectories_uri
         +TimeWindow spill_time_window
-        +AISTrackCollection tracks
+        +string ais_track_uri
         +ScoringWeights scoring_weights
     }
     class CorrelationResponse {
@@ -382,6 +408,7 @@ classDiagram
     }
     class EvidenceBreakdown {
         +float proximity_score
+        +float trajectory_score
         +float timing_score
         +float anomaly_score
         +float gap_score
@@ -402,16 +429,17 @@ classDiagram
 The score should be explainable and configurable. A conceptual weighted score is:
 
 $$
-S_v = w_p P_v + w_t T_v + w_a A_v + w_g G_v
+S_v = w_p P_v + w_r R_v + w_t T_v + w_a A_v + w_g G_v
 $$
 
 where:
 
 - $P_v$ is proximity to high-probability origin cells.
+- $R_v$ is consistency between the vessel trajectory and the source/forecast movement.
 - $T_v$ is alignment with the estimated spill-time window.
 - $A_v$ is speed/course anomaly evidence.
 - $G_v$ is evidence from AIS reporting gaps.
-- $w_p, w_t, w_a, w_g$ are versioned configuration weights.
+- $w_p, w_r, w_t, w_a, w_g$ are versioned configuration weights.
 
 The service must return each component of $S_v$, the weights used, the source AIS records, and the scoring-model version. A high score is an investigative lead, not proof of responsibility.
 
@@ -423,7 +451,8 @@ Request:
 
 ```json
 {
-  "image_uri": "s3://sar-bucket/S1A_2026_001.tif",
+  "image_uri": "s3://imagery/S1A_2026_001.tif",
+  "sensor_type": "SAR",
   "acquisition_time": "2026-09-24T05:42:00Z",
   "product_id": "S1A_PRODUCT_001",
   "polarization": "VV"
@@ -439,7 +468,9 @@ Response:
   "timestamp": "2026-09-24T05:42:00Z",
   "geometry_stats": { "area_sq_km": 12.4, "perimeter_km": 18.7 },
   "model_version": "unet-v3",
-  "model_confidence": 0.91
+  "model_confidence": 0.91,
+  "age_estimate": null,
+  "quality_warnings": ["Age estimate unavailable from a single observation"]
 }
 ```
 
@@ -453,6 +484,7 @@ Request:
   "detection_time": "2026-09-24T05:42:00Z",
   "earliest_spill_time": "2026-09-20T00:00:00Z",
   "latest_spill_time": "2026-09-24T05:42:00Z",
+  "forecast_duration_hours": 72,
   "leeway_factor": 0.03,
   "particle_count": 10000
 }
@@ -467,6 +499,12 @@ Response:
     "grid_uri": "s3://artifacts/hind-001/origin-grid.nc",
     "crs": "EPSG:4326",
     "resolution_km": 1.0
+  },
+  "backward_trajectories_uri": "s3://artifacts/hind-001/backward-trajectories.nc",
+  "forward_forecast": {
+    "grid_uri": "s3://artifacts/hind-001/forward-forecast.nc",
+    "trajectories_uri": "s3://artifacts/hind-001/forward-trajectories.nc",
+    "forecast_until": "2026-09-27T05:42:00Z"
   },
   "spill_time_window": {
     "start": "2026-09-21T06:00:00Z",
@@ -488,7 +526,8 @@ Request:
     "end": "2026-09-23T18:00:00Z"
   },
   "ais_track_uri": "s3://ais/region-2026-09.parquet",
-  "scoring_weights": { "proximity": 0.35, "timing": 0.30, "anomaly": 0.20, "gap": 0.15 }
+  "forward_trajectories_uri": "s3://artifacts/hind-001/forward-trajectories.nc",
+  "scoring_weights": { "proximity": 0.30, "trajectory": 0.20, "timing": 0.25, "anomaly": 0.15, "gap": 0.10 }
 }
 ```
 
@@ -505,6 +544,7 @@ Response:
       "confidence": "medium",
       "evidence": {
         "proximity_score": 0.91,
+        "trajectory_score": 0.88,
         "timing_score": 0.84,
         "anomaly_score": 0.62,
         "gap_score": 0.77
@@ -943,6 +983,7 @@ classDiagram
         +datetime detection_time
         +datetime earliest_spill_time
         +datetime latest_spill_time
+        +int forecast_duration_hours
         +float leeway_factor
         +int particle_count
     }
@@ -1231,7 +1272,7 @@ flowchart LR
 | Application shell | Navigation, authenticated user context, global notifications, responsive layout. |
 | Case workspace | Create cases, select source imagery, define region and time settings. |
 | Pipeline monitor | Show stage state, progress, duration, errors, retries, and artifact links. |
-| Geospatial view | Display SAR extent, slick polygon, origin probability field, vessel tracks, and candidate locations. |
+| Geospatial view | Display SAR/EO extent, slick polygon, backward origin probability, forward forecast, vessel tracks, and candidate locations. |
 | Evidence review | Compare candidates, expose score factors, show source timestamps, and record analyst notes. |
 | API client | Typed requests, request cancellation, polling or live status updates, and normalized errors. |
 
@@ -1352,7 +1393,7 @@ flowchart LR
 
 **Attribution review**
 
-- Show the slick polygon and origin probability field on the map.
+- Show the slick polygon, backward origin probability, and forward forecast as independent map layers.
 - Overlay AIS vessel tracks and candidate locations.
 - Show ranked candidates in a sortable table.
 - Open an evidence panel for each candidate with score components, timestamps, and data-quality warnings.
@@ -1389,7 +1430,7 @@ Use two distinct state categories:
 | Server state | Case details, run status, slick geometry, probability metadata, candidates | Query client cache with invalidation and refetch rules |
 | Local UI state | Selected map layer, open panel, table sort, active tab, unsaved note | Component state or a small UI store |
 
-The frontend should invalidate or refetch case data after starting, retrying, cancelling, or completing a run. It should avoid duplicating the entire backend case object in multiple component states.
+The frontend should display sensor type, optional age estimate and uncertainty, and both backward and forward drift products. It should invalidate or refetch case data after starting, retrying, cancelling, or completing a run. It should avoid duplicating the entire backend case object in multiple component states.
 
 ### Pipeline status update behavior
 
@@ -1407,7 +1448,8 @@ flowchart TB
     BASE["Base map / nautical context"]
     SARLAYER["SAR image footprint / raster preview"]
     SLICKLAYER["Detected slick GeoJSON"]
-    PROBLAYER["Origin probability heatmap"]
+    PROBLAYER["Backward origin probability heatmap"]
+    FORECASTLAYER["Forward drift forecast"]
     TRACKLAYER["AIS vessel tracks"]
     CANDLAYER["Candidate vessel markers"]
     CONTROLS["Layer controls + legend + time filter"]
@@ -1417,6 +1459,7 @@ flowchart TB
     MAPCANVAS --> SARLAYER
     MAPCANVAS --> SLICKLAYER
     MAPCANVAS --> PROBLAYER
+    MAPCANVAS --> FORECASTLAYER
     MAPCANVAS --> TRACKLAYER
     MAPCANVAS --> CANDLAYER
     CONTROLS --> MAPCANVAS
@@ -1427,7 +1470,7 @@ flowchart TB
 
 - Use a consistent coordinate reference system for API data and map rendering.
 - Render the slick as a highlighted polygon with an outline distinct from probability shading.
-- Render the origin field with a legend that explains whether values are normalized probability, density, or relative likelihood.
+- Render backward origin likelihood and forward forecast as separate layers, each with a legend explaining whether values are normalized probability, density, or relative likelihood.
 - Allow toggling layers independently so the analyst can inspect one evidence source at a time.
 - Filter AIS tracks by time window and candidate vessel.
 - Highlight selected candidates across the map, table, and evidence panel.
@@ -1555,7 +1598,7 @@ flowchart TB
                 SAR["Sentinel-1 SAR"]
                 ERA["ERA5 winds"]
                 HY["HYCOM currents"]
-                AISDATA["Historical AIS"]
+                AISDATA["Historical or synthetic AIS"]
         end
 
         ANALYST --> CASEUI --> API
@@ -1591,9 +1634,9 @@ flowchart TB
 4. Slick detection calibrates, filters, masks, segments, and polygonizes the SAR image.
 5. The backend stores the slick GeoJSON, geometry statistics, model version, and stage audit event.
 6. The worker calls `POST /hindcast` with the slick reference and environmental dataset references.
-7. OpenDrift runs a backward particle simulation and writes the probability grid and trajectories to object storage.
-8. The backend stores the spill-time window, grid URI, simulation settings, and data-quality metadata.
-9. The worker calls `POST /correlate` with the probability grid, spill window, and AIS track reference.
+7. OpenDrift runs backward source attribution and a separate forward forecast, writing both trajectory sets and probability fields to object storage.
+8. The backend stores the spill-time window, origin and forecast artifact URIs, simulation settings, and data-quality metadata.
+9. The worker calls `POST /correlate` with the origin probability grid, spill window, forward trajectory reference, and real or synthetic AIS track reference.
 10. AIS correlation filters tracks, computes CPA and timing features, detects anomalies and gaps, and creates ranked candidates.
 11. The FastAPI backend persists every candidate and evidence item, marks the run `COMPLETED`, and exposes results to the frontend.
 12. The analyst reviews the map, table, evidence breakdown, source timestamps, and model versions before making a human decision.
@@ -1689,11 +1732,11 @@ Store these in PostgreSQL:
 
 Store these as immutable, versioned artifacts:
 
-- Original Sentinel-1 GeoTIFF
+- Original Sentinel-1 SAR and optional EO imagery
 - Preprocessed SAR raster and segmentation mask
 - Slick GeoJSON and preview image
 - ERA5 and HYCOM subsets used for a run
-- OpenDrift particle trajectories and NetCDF probability grid
+- OpenDrift backward and forward trajectories and separate NetCDF probability fields
 - AIS input subset and normalized Parquet file
 - Correlation evidence export and reproducibility manifest
 
@@ -1731,30 +1774,31 @@ Build in this order so a working demonstration exists early and each later featu
 
 ### Milestone 2: Real slick detection
 
-- Add SAR GeoTIFF ingestion and CRS validation.
-- Implement calibration, Lee filtering, land masking, and U-Net inference.
+- Add SAR GeoTIFF ingestion and CRS validation; define the sensor-aware EO input contract.
+- Implement SAR calibration, Lee filtering, land masking, and U-Net inference. Keep EO-specific calibration, band selection, and cloud masking on a separate validated path.
+- Return geometry and confidence metadata; report slick age only when supportable by observations.
 - Produce valid GeoJSON and geometry statistics.
-- Add a map overlay for the slick.
+- Add a map overlay for the slick and keep an optional age estimate qualified by its evidence.
 
 **Exit condition:** A sample image produces a visually credible slick polygon with measured area and timestamp.
 
 ### Milestone 3: Real drift hindcast
 
 - Add ERA5 and HYCOM subset loading.
-- Run OpenDrift backward simulation with configurable particle count.
-- Store trajectories and probability grid in NetCDF.
-- Render the origin probability field with a numeric legend.
+- Run OpenDrift backward source simulation and forward forecast with configurable particle count and forecast horizon.
+- Store backward and forward trajectories and probability fields as distinct NetCDF artifacts.
+- Render both fields with separate numeric legends.
 
 **Exit condition:** The source region and spill window are visible and reproducible from stored inputs.
 
 ### Milestone 4: Real AIS correlation
 
-- Normalize AIS records and validate MMSI and timestamps.
-- Implement spatial-temporal filtering and CPA.
-- Add timing, speed/course anomaly, and transponder-gap features.
+- Normalize real or synthetic AIS records and validate MMSI and timestamps.
+- Filter unrelated tracks using origin region and spill-time window; implement spatial-temporal filtering and CPA.
+- Add trajectory-consistency, timing, speed/course anomaly, and transponder-gap features.
 - Return ranked candidates with evidence breakdown.
 
-**Exit condition:** The UI shows at least three ranked candidates and explains every score component.
+**Exit condition:** The UI shows ranked fixture candidates and explains every score component; real-vessel claims require licensed AIS evidence.
 
 ### Milestone 5: Judge-ready hardening
 
@@ -1772,10 +1816,11 @@ The strongest demonstration is a short investigation story rather than a tour of
 1. **Problem:** “A satellite detects a slick, but detection alone cannot identify its source or responsible vessel.”
 2. **Observe:** Upload or select a Sentinel-1 image and show the segmented slick polygon.
 3. **Trace:** Start the hindcast and animate or reveal the backward particle paths and origin probability field.
-4. **Correlate:** Overlay historical AIS tracks and show how the system narrows the search space.
-5. **Explain:** Select a candidate and show proximity, timing, anomaly, and AIS-gap evidence separately.
-6. **Qualify:** Show a second candidate and explain why the system produces ranked leads rather than a single accusation.
-7. **Audit:** Open the run timeline and show data versions, model versions, timestamps, and reproducibility artifacts.
+4. **Forecast:** Show the separate forward drift layer and how its time horizon differs from the backward origin field.
+5. **Correlate:** Overlay real or clearly labeled synthetic AIS tracks and show how spatial/temporal filtering narrows the search space.
+6. **Explain:** Select a candidate and show proximity, timing, anomaly, and AIS-gap evidence separately.
+7. **Qualify:** Show a second candidate and explain why the system produces ranked leads rather than a single accusation.
+8. **Audit:** Open the run timeline and show data versions, model versions, timestamps, and reproducibility artifacts.
 
 Keep the live demo under five minutes. Pre-cache the sample datasets, but visibly execute the pipeline and show real intermediate outputs rather than switching between static screenshots.
 
@@ -1814,7 +1859,9 @@ Track metrics that demonstrate scientific usefulness, system reliability, and us
 | --- | --- | --- |
 | Slick detection | Intersection-over-Union against labeled mask | Report on held-out sample; do not invent a target without data |
 | Slick geometry | Valid polygon rate | 100% for accepted outputs |
-| Hindcast | Source-region containment | Report whether known source lies in top probability region |
+| Hindcast | Source-region containment | Report whether known source lies in top backward probability region |
+| Forecast | Forward trajectory error | Measure against a known/synthetic trajectory and forecast horizon |
+| Slick characterization | Age estimate availability | Report only for observations with validated age evidence; do not force an estimate |
 | Hindcast | Simulation reproducibility | Same inputs and configuration produce same manifest and comparable field |
 | AIS correlation | Candidate recall at top-k | Report on synthetic or labeled scenarios |
 | Explainability | Candidates with complete evidence breakdown | 100% |
@@ -1831,12 +1878,12 @@ The project is complete when:
 - The frontend creates a case and starts a pipeline through FastAPI.
 - The FastAPI backend persists the case and coordinates the three AI microservices, which also use FastAPI.
 - Each AI microservice has its own FastAPI endpoint, health check, validation model, and test fixture.
-- Stage 1 returns a valid slick GeoJSON result.
-- Stage 2 returns a probability field and spill-time window.
+- Stage 1 returns a valid slick GeoJSON result for SAR, with a defined EO path, geometry statistics, and an optional qualified age estimate.
+- Stage 2 returns a backward origin field, a distinct forward drift forecast, and a spill-time window.
 - Stage 3 returns ranked vessels with transparent evidence.
 - PostgreSQL stores lifecycle state, summaries, candidate records, and audit events.
 - Object storage preserves the input and intermediate scientific artifacts.
-- The frontend renders the slick, origin field, AIS tracks, candidates, and evidence.
+- The frontend renders the slick, backward origin field, forward forecast, AIS tracks, candidates, and evidence.
 - Retryable and non-retryable errors are visible and traceable by correlation ID.
 - Model versions, data versions, configuration, and timestamps are included in results.
 - The complete fixture demo runs with one command from a clean checkout.
