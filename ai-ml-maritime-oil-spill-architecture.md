@@ -10,10 +10,10 @@ flowchart LR
     OCEAN["HYCOM ocean currents"]
     AIS["Historical AIS vessel\ntrack data"]
 
-    subgraph JAVA["Java Spring Boot backend\nREST API + workflow orchestration"]
+    subgraph FASTAPI_BACKEND["Python FastAPI backend\nREST API + workflow orchestration"]
         CASE["Case management\nAuthentication + authorization"]
         ORCH["Pipeline orchestrator\nState machine + job queue"]
-        CLIENTS["Typed FastAPI clients\nTimeouts + retries + correlation IDs"]
+        CLIENTS["Typed async HTTP clients\nTimeouts + retries + correlation IDs"]
         RESULTS["Results + evidence API\nPostgreSQL + object storage"]
         CASE --> ORCH --> CLIENTS
         ORCH --> RESULTS
@@ -81,7 +81,7 @@ flowchart LR
 
 ## Pipeline Contract
 
-1. The frontend sends case commands to the Java Spring Boot backend over REST; the frontend never calls the Python services directly.
+1. The frontend sends case commands to the Python FastAPI backend over REST; the frontend never calls the Python services directly.
 2. The backend stores source references and invokes `POST /detect-slick` through `SlickDetectionClient`. The FastAPI service accepts a Sentinel-1 SAR GeoTIFF reference and returns a GeoJSON slick polygon, acquisition timestamp, and geometry statistics.
 3. The backend passes the detection result to `POST /hindcast` through `DriftHindcastClient`. The FastAPI service combines ERA5 and HYCOM data and returns an origin probability field plus an estimated spill-time window.
 4. The backend passes the hindcast result and AIS track reference to `POST /correlate` through `AisCorrelationClient`. The FastAPI service returns ranked candidate vessels with a transparent evidence breakdown.
@@ -99,7 +99,7 @@ flowchart TB
     CURRENT["HYCOM ocean model"]
     AISDATA["Historical AIS provider"]
 
-    BACKEND["Java Spring Boot backend\nCase management + REST orchestration"]
+    BACKEND["Python FastAPI backend\nCase management + REST orchestration"]
 
     subgraph AI["Python AI/ML microservices"]
         DETECT["Slick Detection\nPOST /detect-slick"]
@@ -128,7 +128,7 @@ flowchart TB
 
 | Portion | Responsibility | Does not own |
 | --- | --- | --- |
-| Java Spring Boot backend | Case lifecycle, authentication, orchestration, UI-facing APIs, persistence of case results | CNN inference, particle physics, AIS scoring logic |
+| Python FastAPI backend | Case lifecycle, authentication, orchestration, UI-facing APIs, persistence of case results | CNN inference, particle physics, AIS scoring logic |
 | Slick Detection Service | Convert a SAR image into a georeferenced oil-slick observation | Vessel attribution or spill-source inference |
 | Drift Hindcast Service | Estimate possible source regions and spill times from environmental forcing | Vessel identity or legal conclusions |
 | AIS Correlation Service | Compare candidate vessels against the probabilistic source and time window | Image segmentation or ocean simulation |
@@ -189,7 +189,7 @@ Each service is independently deployable. The routers contain HTTP concerns only
 ```mermaid
 sequenceDiagram
     actor Analyst
-    participant Backend as Spring Boot Backend
+    participant Backend as FastAPI Backend
     participant Detect as Slick Detection API
     participant Hindcast as Drift Hindcast API
     participant Correlate as AIS Correlation API
@@ -520,7 +520,7 @@ Response:
 ```mermaid
 flowchart TB
     GATEWAY["API Gateway / Ingress"]
-    ORCH["Spring Boot orchestration service"]
+    ORCH["FastAPI orchestration service"]
     Q["Optional job queue\nFor long-running hindcasts"]
 
     subgraph K8S["Container platform"]
@@ -571,9 +571,9 @@ Recommended operational controls:
 
 All errors should return a stable structure containing an error code, human-readable message, correlation ID, and retryability flag. The system should fail closed on invalid geometry or missing evidence rather than manufacture a confident attribution.
 
-## 10. Java Spring Boot Backend Architecture
+## 10. Python FastAPI Backend Architecture
 
-The Java backend is the system-facing application layer. It owns user workflows, case state, authentication, orchestration, result persistence, and analyst-facing APIs. It delegates scientific computation to the Python services and never duplicates their model logic.
+The Python backend is the system-facing application layer. It owns user workflows, case state, authentication, orchestration, result persistence, and analyst-facing APIs. It delegates scientific computation to the Python services and never duplicates their model logic.
 
 ### 10.1 Backend Context Diagram
 
@@ -583,8 +583,8 @@ flowchart LR
     UI["Web UI / Dashboard"]
     GATEWAY["API Gateway / Ingress"]
 
-    subgraph BACKEND["Java Spring Boot Backend"]
-        API["REST Controllers"]
+    subgraph BACKEND["Python FastAPI Backend"]
+        API["FastAPI Routers"]
         AUTH["Authentication + Authorization"]
         CASE["Case Management"]
         WORKFLOW["Attribution Workflow Orchestrator"]
@@ -626,11 +626,11 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph PRESENTATION["Presentation layer"]
-        CASECTRL["CaseController"]
-        PIPECTRL["PipelineController"]
-        RESULTCTRL["ResultController"]
-        JOBCONTROL["JobController"]
-        EXHANDLER["GlobalExceptionHandler"]
+        CASECTRL["CaseRouter"]
+        PIPECTRL["PipelineRouter"]
+        RESULTCTRL["ResultRouter"]
+        JOBCONTROL["JobRouter"]
+        EXHANDLER["Exception handlers"]
     end
 
     subgraph APPLICATION["Application layer"]
@@ -654,7 +654,7 @@ flowchart TB
         CASEREPO["CaseRepository"]
         RUNREPO["PipelineRunRepository"]
         EVIDENCEREPO["EvidenceRepository"]
-        PYCLIENT["PythonServiceClient"]
+        PYCLIENT["AIServiceClients"]
         STORAGE["ArtifactStorageClient"]
         EVENTBUS["JobEventPublisher"]
         AUDIT["AuditLogRepository"]
@@ -685,14 +685,14 @@ flowchart TB
 
 | Module | Responsibility |
 | --- | --- |
-| `CaseController` | Create, update, list, and retrieve attribution cases. |
-| `PipelineController` | Start or resume the three-stage attribution workflow. |
-| `ResultController` | Return slick geometry, origin probability, ranked vessels, and evidence. |
-| `JobController` | Expose status, progress, retry, and cancellation operations. |
+| FastAPI case router | Create, update, list, and retrieve attribution cases. |
+| FastAPI pipeline router | Start or resume the three-stage attribution workflow. |
+| FastAPI result router | Return slick geometry, origin probability, ranked vessels, and evidence. |
+| FastAPI job router | Expose status, progress, retry, and cancellation operations. |
 | `CaseApplicationService` | Apply case rules and coordinate case persistence. |
 | `PipelineApplicationService` | Enforce stage order and coordinate Python service calls. |
 | `CaseStateMachine` | Prevent invalid transitions such as correlation before hindcast completion. |
-| `PythonServiceClient` | Typed REST client with timeouts, retries, idempotency, and correlation IDs. |
+| AI service clients | Typed asynchronous HTTPX clients with timeouts, retries, idempotency, and correlation IDs. |
 | `ArtifactStorageClient` | Store and retrieve large GeoTIFF, NetCDF, GeoJSON, and AIS artifacts. |
 | `AuditLogRepository` | Preserve who initiated a run, which versions were used, and what changed. |
 
@@ -847,7 +847,7 @@ The state machine is persisted, so a service restart does not lose the current w
 }
 ```
 
-### Backend-to-Python call pattern
+### Backend-to-AI-service call pattern
 
 1. The backend creates a `PipelineRun` and generates a correlation ID.
 2. It sends only references to large files where possible, rather than embedding GeoTIFF or NetCDF content in JSON.
@@ -855,9 +855,9 @@ The state machine is persisted, so a service restart does not lose the current w
 4. A successful response is persisted before the next stage begins.
 5. A failed call is classified as retryable or non-retryable and recorded in the audit log.
 
-### Backend-to-FastAPI adapter architecture
+### Backend-to-AI-service client architecture
 
-The Spring Boot backend communicates with each Python service through a dedicated typed adapter. The backend does not call FastAPI endpoints directly from controllers or workflow code. This keeps transport concerns, authentication, retries, and DTO conversion in one place.
+The FastAPI backend communicates with each AI microservice through a dedicated typed async HTTP client. Routers and workflow code use these clients instead of handling service transport directly. This keeps authentication, timeouts, retries, and Pydantic request/response validation in one place.
 
 ```mermaid
 flowchart LR
@@ -867,7 +867,7 @@ flowchart LR
     HINCLIENT["DriftHindcastClient\nPOST /hindcast"]
     AISC["AisCorrelationClient\nPOST /correlate"]
 
-    subgraph FASTAPI["Python FastAPI applications"]
+    subgraph FASTAPI["Python AI microservices"]
         DETAPI["Slick Detection API"]
         HINAPI["Drift Hindcast API"]
         AISAPI["AIS Correlation API"]
@@ -885,72 +885,72 @@ flowchart LR
     AISC --> AISAPI
 ```
 
-### FastAPI service configuration
+### AI service client configuration
 
-Each FastAPI application is independently configured through environment variables or service discovery:
+Each AI microservice is independently configured through environment variables or service discovery:
 
 ```text
 SLICK_DETECTION_BASE_URL=http://slick-detection:8001
 DRIFT_HINDCAST_BASE_URL=http://drift-hindcast:8002
 AIS_CORRELATION_BASE_URL=http://ais-correlation:8003
-FASTAPI_CONNECT_TIMEOUT_MS=2000
-FASTAPI_READ_TIMEOUT_MS=30000
-FASTAPI_MAX_RETRIES=3
+AI_SERVICE_CONNECT_TIMEOUT_SECONDS=2
+AI_SERVICE_READ_TIMEOUT_SECONDS=30
+AI_SERVICE_MAX_RETRIES=3
 ```
 
 The hindcast and correlation services may use longer read timeouts or asynchronous job endpoints than slick detection. These values belong in backend configuration, not in frontend code or request payloads.
 
-### Java client contracts
+### Python service client and Pydantic schema contracts
 
 ```mermaid
 classDiagram
     class PipelineApplicationService {
-        +startDetection(runId, input) SlickDetectionResult
-        +startHindcast(runId, detection) DriftHindcastResult
-        +startCorrelation(runId, hindcast, ais) VesselAttributionResult
+        +async start_detection(run_id, input) SlickDetectionResult
+        +async start_hindcast(run_id, detection) DriftHindcastResult
+        +async start_correlation(run_id, hindcast, ais) VesselAttributionResult
     }
     class FastApiRequestPolicy {
-        +execute(request, operation) response
-        +validateResponse(response) void
-        +classifyFailure(error) FailureType
+        +async execute(request, operation) response
+        +validate_response(response) None
+        +classify_failure(error) FailureType
     }
     class SlickDetectionClient {
-        +detect(request, headers) SlickDetectionResult
-        +health() ServiceHealth
+        +async detect(request, headers) SlickDetectionResult
+        +async health() ServiceHealth
     }
     class DriftHindcastClient {
-        +hindcast(request, headers) DriftHindcastResult
-        +health() ServiceHealth
+        +async hindcast(request, headers) DriftHindcastResult
+        +async health() ServiceHealth
     }
     class AisCorrelationClient {
-        +correlate(request, headers) VesselAttributionResult
-        +health() ServiceHealth
+        +async correlate(request, headers) VesselAttributionResult
+        +async health() ServiceHealth
     }
-    class FastApiHeaders {
-        +String correlationId
-        +String pipelineRunId
-        +String idempotencyKey
-        +String serviceToken
+    class ServiceHeaders {
+        +str correlation_id
+        +str pipeline_run_id
+        +str idempotency_key
+        +str service_token
     }
-    class SlickDetectionRequestDto {
-        +String imageUri
-        +Instant acquisitionTime
-        +String productId
-        +String polarization
+    class SlickDetectionRequest {
+        +str image_uri
+        +datetime acquisition_time
+        +str product_id
+        +str polarization
     }
-    class HindcastRequestDto {
-        +String slickArtifactUri
-        +Instant detectionTime
-        +Instant earliestSpillTime
-        +Instant latestSpillTime
-        +Double leewayFactor
-        +Integer particleCount
+    class HindcastRequest {
+        +str slick_artifact_uri
+        +datetime detection_time
+        +datetime earliest_spill_time
+        +datetime latest_spill_time
+        +float leeway_factor
+        +int particle_count
     }
-    class CorrelationRequestDto {
-        +String probabilityGridUri
-        +String aisTrackUri
-        +Instant windowStart
-        +Instant windowEnd
+    class CorrelationRequest {
+        +str probability_grid_uri
+        +str ais_track_uri
+        +datetime window_start
+        +datetime window_end
         +ScoringWeights weights
     }
 
@@ -960,23 +960,23 @@ classDiagram
     SlickDetectionClient --> FastApiRequestPolicy
     DriftHindcastClient --> FastApiRequestPolicy
     AisCorrelationClient --> FastApiRequestPolicy
-    SlickDetectionClient ..> SlickDetectionRequestDto
-    DriftHindcastClient ..> HindcastRequestDto
-    AisCorrelationClient ..> CorrelationRequestDto
-    FastApiRequestPolicy --> FastApiHeaders
+    SlickDetectionClient ..> SlickDetectionRequest
+    DriftHindcastClient ..> HindcastRequest
+    AisCorrelationClient ..> CorrelationRequest
+    FastApiRequestPolicy --> ServiceHeaders
 ```
 
-### Java-to-FastAPI request mapping
+### Backend-to-AI-service request mapping
 
-| Backend adapter | FastAPI endpoint | Request reference | Response persisted by backend |
+| Backend adapter | AI service endpoint | Request reference | Response persisted by backend |
 | --- | --- | --- | --- |
 | `SlickDetectionClient` | `POST /detect-slick` | SAR GeoTIFF URI, acquisition time, product ID, polarization | `SlickObservation` and detection artifact metadata |
 | `DriftHindcastClient` | `POST /hindcast` | Slick artifact, time bounds, leeway factor, particle count | `HindcastResult` and probability-grid URI |
 | `AisCorrelationClient` | `POST /correlate` | Probability-grid URI, spill window, AIS track URI, scoring weights | `VesselCandidate` and `EvidenceItem` records |
 
-### Common FastAPI headers
+### Common AI service headers
 
-Every backend request to a Python service should include:
+Every backend request to an AI service should include:
 
 ```http
 X-Correlation-Id: corr-7b3f
@@ -986,13 +986,13 @@ Authorization: Bearer <service-token>
 Content-Type: application/json
 ```
 
-The Python service should echo `X-Correlation-Id` in its response. The backend validates that the response belongs to the active run before persisting it.
+The AI service should echo `X-Correlation-Id` in its response. The backend validates that the response belongs to the active run before persisting it.
 
-### Updated Java-to-FastAPI runtime sequence
+### Backend-to-AI-service runtime sequence
 
 ```mermaid
 sequenceDiagram
-    participant Worker as Spring Boot Workflow Worker
+    participant Worker as FastAPI Workflow Worker
     participant DB as Metadata DB
     participant DClient as SlickDetectionClient
     participant DAPI as FastAPI /detect-slick
@@ -1021,9 +1021,9 @@ sequenceDiagram
     Worker->>DB: Persist candidates and evidence
 ```
 
-### FastAPI error mapping
+### AI service error mapping
 
-| FastAPI response | Backend behavior |
+| AI service response | Backend behavior |
 | --- | --- |
 | `2xx` with valid payload | Persist result and advance the state machine. |
 | `400` or `422` validation error | Mark stage failed as non-retryable and expose field errors. |
@@ -1033,7 +1033,7 @@ sequenceDiagram
 | Timeout or connection failure | Record service-unavailable error and retry through the queue. |
 | Invalid or incomplete `2xx` payload | Reject response, preserve raw response metadata, and fail closed. |
 
-The backend should expose a stable error response to the frontend even when the underlying FastAPI error differs:
+The backend should expose a stable error response to the frontend even when the underlying AI service error differs:
 
 ```json
 {
@@ -1050,7 +1050,7 @@ The backend should expose a stable error response to the frontend even when the 
 ```mermaid
 sequenceDiagram
     participant Client as Web UI
-    participant API as Spring Boot API
+    participant API as FastAPI API
     participant DB as Metadata DB
     participant Queue as Job Queue
     participant Worker as Workflow Worker
@@ -1197,7 +1197,7 @@ flowchart LR
     ANALYST["Investigator / Analyst"]
     BROWSER["Web browser"]
     CDN["Static asset CDN / Web server"]
-    API["Spring Boot REST API"]
+    API["FastAPI REST API"]
     WS["Optional SSE / WebSocket status channel"]
     MAP["Map tile and geospatial services"]
     IDP["OAuth2 / OIDC identity provider"]
@@ -1440,7 +1440,7 @@ flowchart TB
 sequenceDiagram
     actor Analyst
     participant Review as Attribution Review Page
-    participant API as Spring Boot API
+    participant API as FastAPI API
     participant Map as Map Renderer
     participant Table as Candidate Table
     participant Panel as Evidence Panel
@@ -1503,7 +1503,7 @@ flowchart TB
     BUNDLE --> CDN["CDN / web server"]
     CDN --> BROWSER["Analyst browser"]
     BROWSER --> GATEWAY["API Gateway"]
-    GATEWAY --> BACKEND["Spring Boot backend"]
+    GATEWAY --> BACKEND["FastAPI backend"]
     BROWSER --> IDP["OIDC provider"]
     BROWSER --> MAPS["Approved map tile service"]
 ```
@@ -1531,11 +1531,11 @@ flowchart TB
                 MAPUI["Map + evidence review"]
         end
 
-        subgraph BACKEND["Java Spring Boot application"]
+        subgraph BACKEND["Python FastAPI application"]
                 API["REST API + OAuth2 security"]
                 DOMAIN["Case domain + state machine"]
                 WORKER["Workflow worker"]
-                ADAPTERS["Typed FastAPI adapters"]
+                ADAPTERS["Typed async HTTPX clients"]
         end
 
         subgraph PYTHON["Python FastAPI AI/ML services"]
@@ -1586,7 +1586,7 @@ flowchart TB
 ### One complete case execution
 
 1. An investigator creates a case in the frontend and selects a Sentinel-1 GeoTIFF.
-2. Spring Boot validates the request, stores the case, creates a `PipelineRun`, and returns `202 Accepted`.
+2. FastAPI validates the request, stores the case, creates a `PipelineRun`, and returns `202 Accepted`.
 3. The workflow worker queues Stage 1 and calls `POST /detect-slick` through `SlickDetectionClient`.
 4. Slick detection calibrates, filters, masks, segments, and polygonizes the SAR image.
 5. The backend stores the slick GeoJSON, geometry statistics, model version, and stage audit event.
@@ -1595,7 +1595,7 @@ flowchart TB
 8. The backend stores the spill-time window, grid URI, simulation settings, and data-quality metadata.
 9. The worker calls `POST /correlate` with the probability grid, spill window, and AIS track reference.
 10. AIS correlation filters tracks, computes CPA and timing features, detects anomalies and gaps, and creates ranked candidates.
-11. Spring Boot persists every candidate and evidence item, marks the run `COMPLETED`, and exposes results to the frontend.
+11. The FastAPI backend persists every candidate and evidence item, marks the run `COMPLETED`, and exposes results to the frontend.
 12. The analyst reviews the map, table, evidence breakdown, source timestamps, and model versions before making a human decision.
 
 ## 25. Recommended Repository Structure
@@ -1625,15 +1625,17 @@ sih-architecture/
             components/
         Dockerfile
     backend/
-        src/main/java/.../
+        app/
+            main.py
             api/
+            schemas/
             application/
             domain/
             infrastructure/
             security/
-        src/main/resources/
-            application.yml
-            db/migration/
+            workers/
+        migrations/
+        pyproject.toml
         Dockerfile
     services/
         slick-detection/
@@ -1719,7 +1721,7 @@ Build in this order so a working demonstration exists early and each later featu
 
 ### Milestone 1: End-to-end skeleton
 
-- Create the Spring Boot case API and PostgreSQL schema.
+- Create the FastAPI case API and PostgreSQL schema.
 - Create three FastAPI apps with health endpoints and typed Pydantic models.
 - Create a frontend with case creation, run status, and result placeholder screens.
 - Connect the services with Docker Compose.
@@ -1785,7 +1787,7 @@ Keep the live demo under five minutes. Pre-cache the sample datasets, but visibl
 - Physics-informed backward drift modeling rather than image-only detection.
 - Explainable AIS correlation with evidence factors instead of opaque classification.
 - Separate FastAPI services that can scale according to workload.
-- Java orchestration and a usable analyst frontend rather than a notebook-only prototype.
+- Python orchestration and a usable analyst frontend rather than a notebook-only prototype.
 - Reproducibility through immutable artifacts, version metadata, and audit events.
 
 ### Trust and responsible attribution
@@ -1826,9 +1828,9 @@ Do not claim accuracy, legal responsibility, or operational readiness without la
 
 The project is complete when:
 
-- The frontend creates a case and starts a pipeline through Spring Boot.
-- Spring Boot persists the case and coordinates all three FastAPI services.
-- Each FastAPI service has a separate endpoint, health check, validation model, and test fixture.
+- The frontend creates a case and starts a pipeline through FastAPI.
+- The FastAPI backend persists the case and coordinates the three AI microservices, which also use FastAPI.
+- Each AI microservice has its own FastAPI endpoint, health check, validation model, and test fixture.
 - Stage 1 returns a valid slick GeoJSON result.
 - Stage 2 returns a probability field and spill-time window.
 - Stage 3 returns ranked vessels with transparent evidence.
