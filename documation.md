@@ -50,6 +50,42 @@ The official challenge extends beyond identifying the slick's origin. The implem
 
 The problem statement's listed starting points are [MarineCadastre AccessAIS](https://marinecadastre.gov/accessais/) and the [Sentinel-1 SAR oil-spill dataset, Part I](https://zenodo.org/records/8346860), [Part II](https://zenodo.org/records/8253899), and [Part III](https://zenodo.org/records/13761290). Confirm each dataset's license, metadata, and suitability before using it for training or public redistribution. The [SIH26143 statement](https://sih2026-ps-viewer.vercel.app/ps/SIH26143) is the reference for these requirements.
 
+### How the problem-statement datasets are used
+
+| Dataset/input | Role in the project | Where it enters the flow | Important limitation |
+| --- | --- | --- | --- |
+| [Zenodo Part I — oil spill](https://zenodo.org/records/8346860) | Positive SAR examples for training the slick segmentation model. | Detection model training | Training/validation imagery; do not treat it as a live case upload. |
+| [Zenodo Part II — no oil and look-alikes](https://zenodo.org/records/8253899) | Negative examples that teach the model to reject oil-free scenes and look-alike sea features. | Detection model training | Training/validation imagery; retain class balance and labels. |
+| [Zenodo Part III — test set](https://zenodo.org/records/13761290) | Held-out oil, no-oil, and look-alike examples for measuring the trained detector. | Detector evaluation only | Keep separate from training and tuning to avoid test leakage. |
+| [MarineCadastre AccessAIS](https://marinecadastre.gov/accessais/) | AIS format/sample input for building and checking the track ingestion pipeline. Use real tracks only when they cover the event region and time. | AIS normalization and filtering | The PS names this as a sample source; it does not guarantee suitable real AIS coverage for every spill region. |
+| Synthetic AIS, when real AIS is unavailable | Deterministic tracks for demonstrating spatial/temporal filtering, trajectory matching, anomaly scoring, and known expected rankings. | AIS normalization through candidate ranking | Mark records as synthetic; never present synthetic vessel identities as real observations. |
+
+The Zenodo SAR images are 2048×2048 with VV/VH channels. Their masks are pixel labels and are not georeferenced. Use them to train and evaluate segmentation; use a georeferenced case image for map placement. Parts I and II are training/validation sources, while Part III is the held-out test source. Plan storage before downloading the full collection because the archives are large.
+
+```mermaid
+flowchart LR
+    subgraph MODEL_DATA["Zenodo SAR model data"]
+        P1["Part I<br/>Oil spill images"] --> TRAIN["Train detector"]
+        P2["Part II<br/>No oil + look-alikes"] --> TRAIN
+        P3["Part III<br/>Held-out test set"] --> EVAL["Evaluate detector"]
+        TRAIN --> EVAL
+    end
+
+    CASESAR["Georeferenced SAR case image"] --> DETECT["Trained slick detector"]
+    TRAIN --> DETECT
+    DETECT --> POLYGON["Slick mask + georeferenced polygon<br/>geometry + optional age estimate"]
+    POLYGON --> DRIFT["Backward source trace<br/>+ forward drift forecast"]
+    FORCING["Oceanographic + meteorological inputs<br/>required by PS; no dataset link provided"] --> DRIFT
+    AIS["MarineCadastre AIS format/sample<br/>or clearly labeled synthetic AIS"] --> FILTER["Filter tracks by source region<br/>and spill-time window"]
+    DRIFT --> FILTER
+    FILTER --> SCORE["Rank candidates<br/>proximity + trajectory + behavior"]
+    POLYGON --> UI["Map + evidence review"]
+    DRIFT --> UI
+    SCORE --> UI
+```
+
+The Zenodo parts support detector training and evaluation. They do not provide the event-specific AIS or environmental forcing needed for attribution. The problem statement calls for oceanographic and meteorological inputs but does not link a specific dataset for them; record their source and version when selected.
+
 ## 3. System components and boundaries
 
 | Component | Owns | Must not own |
