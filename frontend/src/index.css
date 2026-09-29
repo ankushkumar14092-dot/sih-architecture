@@ -1,0 +1,421 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+  --bg: #070d1a;
+  --surface: rgba(13, 22, 45, 0.85);
+  --surface-hover: rgba(20, 33, 65, 0.9);
+  --border: rgba(56, 90, 160, 0.25);
+  --border-bright: rgba(88, 166, 255, 0.4);
+  --text: #c9d8f0;
+  --muted: #607090;
+  --accent: #3b82f6;
+  --accent-glow: rgba(59, 130, 246, 0.35);
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --danger-glow: rgba(239, 68, 68, 0.35);
+  --teal: #06b6d4;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+  background-image:
+    radial-gradient(ellipse at 20% 20%, rgba(59,130,246,0.15) 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 80%, rgba(6,182,212,0.12) 0%, transparent 60%);
+  animation: bgBreathing 10s ease-in-out infinite alternate;
+}
+
+@keyframes bgBreathing {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 100% 100%; }
+}
+
+/* ── HEADER ─────────────────────────────────────────────────────────── */
+.header {
+  height: 64px;
+  background: rgba(7, 13, 26, 0.95);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 28px;
+  justify-content: space-between;
+  backdrop-filter: blur(20px);
+  position: relative;
+  z-index: 10;
+}
+
+.header::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0.5;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-icon {
+  width: 36px; height: 36px;
+  background: linear-gradient(135deg, var(--accent), var(--teal));
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
+  box-shadow: 0 0 16px var(--accent-glow);
+}
+
+.logo-text h1 {
+  font-size: 1.1rem; font-weight: 800; 
+  background: linear-gradient(135deg, #fff, #a5b4fc);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: -0.02em;
+}
+
+.logo-text p {
+  font-size: 0.7rem; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase;
+}
+
+.header-right {
+  display: flex; align-items: center; gap: 12px;
+}
+
+.badge {
+  font-size: 0.7rem; padding: 3px 10px; border-radius: 20px;
+  font-weight: 600; letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.badge-blue { background: rgba(59,130,246,0.15); color: var(--accent); border: 1px solid rgba(59,130,246,0.3); }
+.badge-green { background: rgba(34,197,94,0.12); color: var(--success); border: 1px solid rgba(34,197,94,0.3); }
+.badge-red { background: rgba(239,68,68,0.12); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
+.badge-yellow { background: rgba(245,158,11,0.12); color: var(--warning); border: 1px solid rgba(245,158,11,0.3); }
+
+/* ── LAYOUT ──────────────────────────────────────────────────────────── */
+.layout {
+  display: grid;
+  grid-template-columns: 320px 1fr 340px;
+  gap: 12px;
+  padding: 12px;
+  height: calc(100vh - 64px);
+}
+
+/* ── PANELS ──────────────────────────────────────────────────────────── */
+.panel {
+  background: rgba(13, 22, 45, 0.65);
+  border: 1px solid rgba(88, 166, 255, 0.15);
+  border-radius: 16px;
+  padding: 20px;
+  overflow-y: auto;
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.panel-title {
+  font-size: 0.7rem; font-weight: 700; color: var(--muted);
+  letter-spacing: 0.1em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-title::before {
+  content: '';
+  width: 4px; height: 14px;
+  background: linear-gradient(to bottom, var(--accent), var(--teal));
+  border-radius: 2px;
+}
+
+/* ── CARDS ────────────────────────────────────────────────────────────── */
+.card {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+}
+
+.card:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-bright);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+}
+
+.card-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.card-title { font-size: 0.88rem; font-weight: 600; color: #e2eaf7; }
+.card-meta { font-size: 0.75rem; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+
+/* ── MAP AREA ──────────────────────────────────────────────────────────── */
+.map-panel {
+  background: linear-gradient(135deg, #050c1e 0%, #071228 50%, #060e20 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  position: relative;
+  overflow: hidden;
+}
+
+.map-grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(56,90,160,0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56,90,160,0.07) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.map-overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 16px;
+}
+
+.ocean-label {
+  font-size: 0.65rem; font-weight: 700; letter-spacing: 0.15em;
+  color: rgba(59,130,246,0.4); text-transform: uppercase;
+}
+
+/* ── SLICK POLYGON VISUALIZER ─────────────────────────────────────────── */
+.slick-viz {
+  position: relative;
+}
+
+.slick-polygon {
+  width: 120px; height: 80px;
+  background: rgba(239,68,68,0.2);
+  border: 2px solid rgba(239,68,68,0.6);
+  border-radius: 40% 60% 55% 45% / 50% 45% 55% 50%;
+  box-shadow: 0 0 30px rgba(239,68,68,0.25), inset 0 0 20px rgba(239,68,68,0.1);
+  animation: slickPulse 3s ease-in-out infinite;
+}
+
+@keyframes slickPulse {
+  0%, 100% { box-shadow: 0 0 30px rgba(239,68,68,0.25); }
+  50% { box-shadow: 0 0 50px rgba(239,68,68,0.5), 0 0 80px rgba(239,68,68,0.15); }
+}
+
+.origin-ring {
+  position: absolute;
+  width: 200px; height: 200px;
+  border: 1px dashed rgba(59,130,246,0.35);
+  border-radius: 50%;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  animation: ringExpand 6s linear infinite;
+}
+
+@keyframes ringExpand {
+  from { transform: translate(-50%, -50%) scale(0.8); opacity: 0.8; }
+  to   { transform: translate(-50%, -50%) scale(1.3); opacity: 0; }
+}
+
+/* ── VESSEL TRACKS ──────────────────────────────────────────────────────── */
+.vessel-track {
+  position: absolute;
+  pointer-events: none;
+}
+
+.vessel-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  position: absolute;
+  animation: blink 1.5s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.8); }
+}
+
+.vessel-dot.suspect { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+.vessel-dot.clear   { background: var(--success); box-shadow: 0 0 8px var(--success); }
+
+/* ── STAGE STEPS ───────────────────────────────────────────────────────── */
+.stage-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  transition: all 0.3s ease;
+}
+
+.stage-row.active  { border-color: rgba(59,130,246,0.5); background: rgba(59,130,246,0.06); }
+.stage-row.done    { border-color: rgba(34,197,94,0.4);  background: rgba(34,197,94,0.05); }
+.stage-row.idle    { opacity: 0.5; }
+
+.stage-icon {
+  width: 32px; height: 32px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; flex-shrink: 0;
+}
+
+.stage-icon.blue  { background: rgba(59,130,246,0.15); }
+.stage-icon.green { background: rgba(34,197,94,0.15); }
+.stage-icon.teal  { background: rgba(6,182,212,0.15); }
+.stage-icon.spin  { animation: spin 1s linear infinite; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.stage-info .label { font-size: 0.82rem; font-weight: 600; color: #e2eaf7; }
+.stage-info .sub   { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
+
+.stage-check { margin-left: auto; font-size: 1rem; }
+
+/* ── CANDIDATE VESSELS ─────────────────────────────────────────────────── */
+.vessel-card {
+  border-radius: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  transition: all 0.2s;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.vessel-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
+.vessel-card.rank-1 { border-left: 3px solid var(--danger); background: rgba(239,68,68,0.04); }
+.vessel-card.rank-2 { border-left: 3px solid var(--warning); background: rgba(245,158,11,0.04); }
+.vessel-card.rank-3 { border-left: 3px solid var(--accent); background: rgba(59,130,246,0.04); }
+
+.score-bar {
+  height: 4px; border-radius: 2px;
+  background: var(--border);
+  margin-top: 8px; overflow: hidden;
+}
+
+.score-fill {
+  height: 100%; border-radius: 2px;
+  transition: width 1s ease;
+}
+
+.score-fill.high   { background: linear-gradient(90deg, var(--danger), #f97316); }
+.score-fill.medium { background: linear-gradient(90deg, var(--warning), #eab308); }
+.score-fill.low    { background: linear-gradient(90deg, var(--accent), var(--teal)); }
+
+/* ── RUN BUTTON ─────────────────────────────────────────────────────────── */
+.run-btn {
+  width: 100%;
+  padding: 13px;
+  border: none;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: linear-gradient(135deg, #2563eb, #0891b2);
+  color: white;
+  box-shadow: 0 4px 20px rgba(37,99,235,0.35);
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+
+.run-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 28px rgba(37,99,235,0.5);
+}
+
+.run-btn:disabled {
+  opacity: 0.6; cursor: not-allowed; transform: none;
+}
+
+.run-btn.done {
+  background: linear-gradient(135deg, #16a34a, #059669);
+  box-shadow: 0 4px 20px rgba(22,163,74,0.35);
+}
+
+/* ── EVIDENCE ROW ──────────────────────────────────────────────────────── */
+.evidence-row {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 0.72rem; color: var(--muted);
+  padding: 3px 0;
+}
+
+.evidence-row span:last-child { color: var(--text); font-weight: 600; }
+
+/* ── METADATA GRID ──────────────────────────────────────────────────────── */
+.meta-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+
+.meta-item {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.meta-item .val { font-size: 1rem; font-weight: 700; color: #fff; }
+.meta-item .lbl { font-size: 0.6rem; color: var(--muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── STATUS BAR ─────────────────────────────────────────────────────────── */
+.status-bar {
+  position: absolute; bottom: 16px; left: 16px; right: 16px;
+  background: rgba(7,13,26,0.9);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 0.72rem; color: var(--muted);
+  backdrop-filter: blur(10px);
+  display: flex; justify-content: space-between; align-items: center;
+}
+
+.status-dot {
+  width: 6px; height: 6px; border-radius: 50%; margin-right: 6px;
+  display: inline-block;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+/* Fix leaflet map size */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  border-radius: 14px;
+}
+
+/* SAR image label tooltip on map */
+.sar-label-tooltip {
+  background: rgba(7, 13, 26, 0.88) !important;
+  border: 1px solid rgba(165, 180, 252, 0.5) !important;
+  border-radius: 6px !important;
+  color: #a5b4fc !important;
+  font-size: 0.65rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.05em !important;
+  padding: 3px 8px !important;
+  white-space: nowrap;
+  box-shadow: 0 0 12px rgba(165, 180, 252, 0.2) !important;
+}
+.sar-label-tooltip::before { display: none !important; }
+

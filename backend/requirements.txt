@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+sqlalchemy
+alembic
+asyncpg
+python-dotenv
+aiofiles

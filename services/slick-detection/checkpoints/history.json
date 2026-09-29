@@ -1,0 +1,11 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 0.9847,
+    "train_iou": 0.0216,
+    "train_dice": 0.0423,
+    "val_loss": 0.9913,
+    "val_iou": 0.0138,
+    "val_dice": 0.0273
+  }
+]

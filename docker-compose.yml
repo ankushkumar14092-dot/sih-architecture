@@ -1,0 +1,57 @@
+version: "3.9"
+
+services:
+  # ── Orchestrator Backend ───────────────────────────────────────────
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DETECT_URL: http://slick-detection:8001
+      HINDCAST_URL: http://drift-hindcast:8002
+      CORRELATE_URL: http://ais-correlation:8003
+    depends_on:
+      - slick-detection
+      - drift-hindcast
+      - ais-correlation
+    volumes:
+      - ./data:/data
+
+  # ── Slick Detection Service ───────────────────────────────────────
+  slick-detection:
+    build: ./services/slick-detection
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data:/data
+      - ./services/slick-detection/checkpoints:/app/checkpoints
+    environment:
+      MODEL_PATH: /app/checkpoints/best_model.pt
+
+  # ── Drift Hindcast Service ────────────────────────────────────────
+  drift-hindcast:
+    build: ./services/drift-hindcast
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./data:/data
+
+  # ── AIS Correlation Service ───────────────────────────────────────
+  ais-correlation:
+    build: ./services/ais-correlation
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./data:/data
+
+  # ── Frontend Dev Server ───────────────────────────────────────────
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+    environment:
+      VITE_API_URL: http://localhost:8000

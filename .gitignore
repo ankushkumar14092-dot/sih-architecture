@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ML checkpoints / models
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+
+# Databases / generated files
+*.db
+*.sqlite
+*.sqlite3
+
+# Datasets
+*.csv
+*.zip
+*.tar
+*.tar.gz
+*.tif
+*.tiff
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS / IDE
+.DS_Store
+.vscode/
